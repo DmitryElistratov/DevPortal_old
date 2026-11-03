@@ -2,6 +2,9 @@ package handler
 
 import (
         "context"
+        "crypto/rand"
+        "encoding/hex"
+        "fmt"
         "net/http"
         "time"
 
@@ -50,11 +53,37 @@ func (h *IntegrationHandler) Get(c *gin.Context) {
         c.JSON(http.StatusOK, integration)
 }
 
+func normalizeIntegrationType(integrationType string) string {
+        switch integrationType {
+        case "git":
+                // Frontend may send a generic "git" type; default to gitlab.
+                return "gitlab"
+        default:
+                return integrationType
+        }
+}
+
+func generateIntegrationID() string {
+        b := make([]byte, 16)
+        if _, err := rand.Read(b); err != nil {
+                return fmt.Sprintf("int-%d", time.Now().UnixNano())
+        }
+        return hex.EncodeToString(b)
+}
+
 func (h *IntegrationHandler) Create(c *gin.Context) {
         var integration model.Integration
         if err := c.ShouldBindJSON(&integration); err != nil {
                 c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
                 return
+        }
+
+        integration.Type = normalizeIntegrationType(integration.Type)
+        if integration.ID == "" {
+                integration.ID = generateIntegrationID()
+        }
+        if integration.Config == nil {
+                integration.Config = map[string]interface{}{}
         }
 
         if err := h.repo.Create(&integration); err != nil {
@@ -73,6 +102,10 @@ func (h *IntegrationHandler) Update(c *gin.Context) {
                 return
         }
         integration.ID = id
+        integration.Type = normalizeIntegrationType(integration.Type)
+        if integration.Config == nil {
+                integration.Config = map[string]interface{}{}
+        }
 
         if err := h.repo.Update(&integration); err != nil {
                 c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

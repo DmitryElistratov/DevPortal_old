@@ -381,9 +381,10 @@ function GitSettings() {
     enabled: true,
   });
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!newIntegration.name || !newIntegration.url || !newIntegration.token) return;
-    addGitIntegration(newIntegration);
+    const ok = await addGitIntegration(newIntegration);
+    if (!ok) return;
     setNewIntegration({ name: '', type: 'gitlab', url: '', token: '', enabled: true });
     setShowForm(false);
   };
@@ -662,9 +663,10 @@ function JiraSettings() {
     enabled: true,
   });
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!newIntegration.name || !newIntegration.url || !newIntegration.username || !newIntegration.apiToken) return;
-    addJiraIntegration(newIntegration);
+    const ok = await addJiraIntegration(newIntegration);
+    if (!ok) return;
     setNewIntegration({ name: '', url: '', username: '', apiToken: '', projectKey: '', enabled: true });
     setShowForm(false);
   };
@@ -952,9 +954,10 @@ function NotificationSettings() {
     channels: [] as string[],
   });
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!newIntegration.name || !newIntegration.webhookUrl) return;
-    addNotificationIntegration(newIntegration);
+    const ok = await addNotificationIntegration(newIntegration);
+    if (!ok) return;
     setNewIntegration({ name: '', type: 'slack', webhookUrl: '', enabled: true, channels: [] });
     setShowForm(false);
   };
@@ -1134,9 +1137,10 @@ function ArgoSettings() {
     enabled: true,
   });
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!newIntegration.name || !newIntegration.url || !newIntegration.token) return;
-    addArgoIntegration(newIntegration);
+    const ok = await addArgoIntegration(newIntegration);
+    if (!ok) return;
     setNewIntegration({ name: '', url: '', token: '', enabled: true });
     setShowForm(false);
   };
@@ -1388,9 +1392,10 @@ function KubernetesSettings() {
     enabled: true,
   });
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!newCluster.name || !newCluster.server) return;
-    addKubernetesCluster(newCluster);
+    const ok = await addKubernetesCluster(newCluster);
+    if (!ok) return;
     setNewCluster({ name: '', server: '', namespace: 'default', environment: 'production', enabled: true });
     setShowForm(false);
   };
@@ -1667,9 +1672,10 @@ function GrafanaSettings() {
     enabled: true,
   });
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!newIntegration.name || !newIntegration.url || !newIntegration.apiKey) return;
-    addGrafanaIntegration(newIntegration);
+    const ok = await addGrafanaIntegration(newIntegration);
+    if (!ok) return;
     setNewIntegration({ name: '', url: '', apiKey: '', enabled: true });
     setShowForm(false);
   };
@@ -1921,9 +1927,10 @@ function GraylogSettings() {
     enabled: true,
   });
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!newIntegration.name || !newIntegration.url || !newIntegration.username || !newIntegration.password) return;
-    addGraylogIntegration(newIntegration);
+    const ok = await addGraylogIntegration(newIntegration);
+    if (!ok) return;
     setNewIntegration({ name: '', url: '', username: '', password: '', enabled: true });
     setShowForm(false);
   };
@@ -2192,9 +2199,10 @@ function VaultSettings() {
     enabled: true,
   });
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!newIntegration.name || !newIntegration.url || !newIntegration.token) return;
-    addVaultIntegration(newIntegration);
+    const ok = await addVaultIntegration(newIntegration);
+    if (!ok) return;
     setNewIntegration({ name: '', url: '', token: '', enabled: true });
     setShowForm(false);
   };

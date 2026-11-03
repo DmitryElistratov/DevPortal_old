@@ -1,1 +1,0 @@
-import{j as e}from"./index-BCIE0hLl.js";function a(){return e.jsxs("div",{className:"p-8",children:[e.jsx("h1",{className:"text-2xl",children:"Release Page"}),e.jsx("p",{children:"Coming soon..."})]})}export{a as default};
