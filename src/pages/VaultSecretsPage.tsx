@@ -64,8 +64,10 @@ export default function VaultSecretsPage() {
   const [currentPath, setCurrentPath] = useState('secret');
   const [committedPath, setCommittedPath] = useState('secret');
   const debounceRef = useRef<number | null>(null);
-  // Tree view state: expanded folders + lazily-fetched children per directory
-  const [expanded, setExpanded] = useState<Set<string>>(new Set(['secret']));
+  // Tree view state: expanded folders + lazily-fetched children per directory.
+  // Nothing is expanded by default — every branch opens only after an explicit
+  // click on it (children are fetched on first expand, never eagerly).
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [treeChildren, setTreeChildren] = useState<Record<string, VaultSecret[]>>({});
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -497,13 +499,29 @@ export default function VaultSecretsPage() {
               <span className="text-xs text-gray-400 font-mono">secret/</span>
             </div>
             <div className="p-2 max-h-[600px] overflow-y-auto">
-              {(treeChildren['secret'] ?? []).length === 0 ? (
-                <div className="px-4 py-8 text-center">
-                  <Key className="w-10 h-10 text-gray-300 mx-auto mb-2" />
-                  <p className="text-sm text-gray-500">No secrets at root</p>
-                </div>
-              ) : (
-                (treeChildren['secret'] ?? []).map(node => renderTreeNode(node, 0))
+              {/* Root branch itself is a node too — its children load only on click */}
+              <button
+                onClick={() => toggleNode('secret')}
+                className="flex items-center gap-1.5 w-full px-1 py-1.5 rounded hover:bg-gray-50 text-left"
+                title={expanded.has('secret') ? 'Collapse' : 'Expand'}
+              >
+                {expanded.has('secret')
+                  ? <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />
+                  : <ChevronRight className="w-4 h-4 text-gray-400 shrink-0" />}
+                {expanded.has('secret')
+                  ? <FolderOpen className="w-4 h-4 shrink-0 text-orange-500" />
+                  : <Folder className="w-4 h-4 shrink-0 text-gray-400" />}
+                <span className="text-sm font-mono font-medium text-gray-800">secret/</span>
+              </button>
+              {expanded.has('secret') && (
+                (treeChildren['secret'] ?? []).length === 0 ? (
+                  <div className="px-4 py-6 text-center">
+                    <Key className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+                    <p className="text-sm text-gray-500">No secrets at root</p>
+                  </div>
+                ) : (
+                  (treeChildren['secret'] ?? []).map(node => renderTreeNode(node, 1))
+                )
               )}
             </div>
           </div>
