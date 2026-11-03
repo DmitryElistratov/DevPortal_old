@@ -628,6 +628,19 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to sync projects: " + err.Error()})
 			return
 		}
+		jiraSynced := make([]syncProjectData, 0, len(projects))
+		for _, pr := range projects {
+			name := strings.TrimSpace(pr.Name)
+			if name == "" {
+				name = pr.Key
+			}
+			jiraSynced = append(jiraSynced, syncProjectData{Name: name})
+		}
+		jiraSaved, jiraSaveErr := h.persistSyncedProjects(jiraSynced)
+		if jiraSaveErr != nil && jiraSaved == 0 {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to save synced projects: " + jiraSaveErr.Error()})
+			return
+		}
 		integration.UpdatedAt = time.Now()
 		if err := h.repo.Update(integration); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -640,6 +653,7 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 			"name":           integration.Name,
 			"synced_at":      integration.UpdatedAt,
 			"projects_count": len(projects),
+			"saved_count":    jiraSaved,
 		})
 		return
 
@@ -655,6 +669,18 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to sync applications: " + err.Error()})
 			return
 		}
+		argoSynced := make([]syncProjectData, 0, len(apps))
+		for _, app := range apps {
+			argoSynced = append(argoSynced, syncProjectData{
+				Name:    app.Metadata.Name,
+				RepoURL: app.Spec.Source.RepoURL,
+			})
+		}
+		argoSaved, argoSaveErr := h.persistSyncedProjects(argoSynced)
+		if argoSaveErr != nil && argoSaved == 0 {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to save synced applications: " + argoSaveErr.Error()})
+			return
+		}
 		integration.UpdatedAt = time.Now()
 		if err := h.repo.Update(integration); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -667,6 +693,7 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 			"name":           integration.Name,
 			"synced_at":      integration.UpdatedAt,
 			"projects_count": len(apps),
+			"saved_count":    argoSaved,
 		})
 		return
 
@@ -677,9 +704,22 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 			return
 		}
 		client := kubernetes.NewClient(integration.URL, token)
-		pods, err := client.ListPods(ctx, "default")
+		namespace, _ := requireConfigString(integration.Config, "namespace", "ns")
+		if namespace == "" {
+			namespace = "default"
+		}
+		deployments, err := client.ListDeployments(ctx, namespace)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to sync pods: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to sync deployments: " + err.Error()})
+			return
+		}
+		k8sSynced := make([]syncProjectData, 0, len(deployments))
+		for _, d := range deployments {
+			k8sSynced = append(k8sSynced, syncProjectData{Name: d.Metadata.Name})
+		}
+		k8sSaved, k8sSaveErr := h.persistSyncedProjects(k8sSynced)
+		if k8sSaveErr != nil && k8sSaved == 0 {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to save synced deployments: " + k8sSaveErr.Error()})
 			return
 		}
 		integration.UpdatedAt = time.Now()
@@ -693,7 +733,8 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 			"type":           integration.Type,
 			"name":           integration.Name,
 			"synced_at":      integration.UpdatedAt,
-			"projects_count": len(pods),
+			"projects_count": len(deployments),
+			"saved_count":    k8sSaved,
 		})
 		return
 
