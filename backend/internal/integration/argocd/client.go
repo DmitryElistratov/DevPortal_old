@@ -166,28 +166,15 @@ func (c *Client) SyncApplication(ctx context.Context, appName string) error {
 	return nil
 }
 
-// CreateCanary creates a canary deployment with traffic splitting
-func (c *Client) CreateCanary(ctx context.Context, appName, version string, percentage int) error {
-	payload := map[string]interface{}{
-		"metadata": map[string]interface{}{
-			"annotations": map[string]string{
-				"canary.argoproj.io/traffic-split": fmt.Sprintf("%d", percentage),
-				"canary.argoproj.io/mode":          "canary",
-			},
-		},
-		"spec": map[string]interface{}{
-			"source": map[string]interface{}{
-				"targetRevision": version,
-			},
-		},
-	}
-
-	body, err := json.Marshal(payload)
+// patchApplication sends a JSON-patch request to update an ArgoCD application.
+func (c *Client) patchApplication(ctx context.Context, appName string, patches []map[string]interface{}) error {
+	body, err := json.Marshal(patches)
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "PATCH", fmt.Sprintf("%s/api/v1/applications/%s", c.baseURL, appName), bytes.NewReader(body))
+	url := fmt.Sprintf("%s/api/v1/applications/%s", c.baseURL, appName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -200,90 +187,109 @@ func (c *Client) CreateCanary(ctx context.Context, appName, version string, perc
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	// ArgoCD REST API accepts PATCH semantics via PUT with a JSON patch array;
+	// some versions return 200, tolerate that plus 204.
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("argocd API error: %d - %s", resp.StatusCode, string(respBody))
 	}
 
 	return nil
+}
+
+// SetTargetRevision points the application source at a specific revision
+// (commit SHA / tag / branch) without touching traffic annotations.
+func (c *Client) SetTargetRevision(ctx context.Context, appName, revision string) error {
+	patches := []map[string]interface{}{
+		{
+			"op":   "replace",
+			"path": "/spec/source/targetRevision",
+			"value": revision,
+		},
+	}
+	return c.patchApplication(ctx, appName, patches)
+}
+
+// CreateCanary creates a canary deployment with traffic splitting:
+// sets targetRevision to the canary ref, applies canary annotations and
+// triggers a sync so ArgoCD actually rolls out the new revision.
+func (c *Client) CreateCanary(ctx context.Context, appName, version string, percentage int) error {
+	patches := []map[string]interface{}{
+		{
+			"op":    "replace",
+			"path":  "/spec/source/targetRevision",
+			"value": version,
+		},
+		{
+			"op":    "add",
+			"path":  "/metadata/annotations/canary.argoproj.io~1traffic-split",
+			"value": fmt.Sprintf("%d", percentage),
+		},
+		{
+			"op":    "add",
+			"path":  "/metadata/annotations/canary.argoproj.io~1mode",
+			"value": "canary",
+		},
+	}
+
+	if err := c.patchApplication(ctx, appName, patches); err != nil {
+		return err
+	}
+
+	// Trigger sync so the new revision is actually deployed
+	return c.SyncApplication(ctx, appName)
 }
 
 // UpdateCanaryTraffic updates traffic percentage for canary deployment
 func (c *Client) UpdateCanaryTraffic(ctx context.Context, appName string, percentage int) error {
-	payload := map[string]interface{}{
-		"metadata": map[string]interface{}{
-			"annotations": map[string]string{
-				"canary.argoproj.io/traffic-split": fmt.Sprintf("%d", percentage),
-			},
+	patches := []map[string]interface{}{
+		{
+			"op":    "add",
+			"path":  "/metadata/annotations/canary.argoproj.io~1traffic-split",
+			"value": fmt.Sprintf("%d", percentage),
 		},
 	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "PATCH", fmt.Sprintf("%s/api/v1/applications/%s", c.baseURL, appName), bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("argocd API error: %d - %s", resp.StatusCode, string(respBody))
-	}
-
-	return nil
+	return c.patchApplication(ctx, appName, patches)
 }
 
-// PromoteCanary promotes canary to 100% traffic
+// PromoteCanary promotes canary to 100% traffic and clears canary mode.
 func (c *Client) PromoteCanary(ctx context.Context, appName string) error {
-	return c.UpdateCanaryTraffic(ctx, appName, 100)
-}
-
-// RollbackCanary rolls back canary to 0% traffic
-func (c *Client) RollbackCanary(ctx context.Context, appName string) error {
-	payload := map[string]interface{}{
-		"metadata": map[string]interface{}{
-			"annotations": map[string]string{
-				"canary.argoproj.io/traffic-split": "0",
-				"canary.argoproj.io/mode":          "stable",
-			},
+	patches := []map[string]interface{}{
+		{
+			"op":    "add",
+			"path":  "/metadata/annotations/canary.argoproj.io~1traffic-split",
+			"value": "100",
+		},
+		{
+			"op":    "add",
+			"path":  "/metadata/annotations/canary.argoproj.io~1mode",
+			"value": "stable",
 		},
 	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
+	if err := c.patchApplication(ctx, appName, patches); err != nil {
 		return err
 	}
+	return c.SyncApplication(ctx, appName)
+}
 
-	req, err := http.NewRequestWithContext(ctx, "PATCH", fmt.Sprintf("%s/api/v1/applications/%s", c.baseURL, appName), bytes.NewReader(body))
-	if err != nil {
+// RollbackCanary rolls back canary to 0% traffic and returns app to stable mode.
+func (c *Client) RollbackCanary(ctx context.Context, appName string) error {
+	patches := []map[string]interface{}{
+		{
+			"op":    "add",
+			"path":  "/metadata/annotations/canary.argoproj.io~1traffic-split",
+			"value": "0",
+		},
+		{
+			"op":    "add",
+			"path":  "/metadata/annotations/canary.argoproj.io~1mode",
+			"value": "stable",
+		},
+	}
+	if err := c.patchApplication(ctx, appName, patches); err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("argocd API error: %d - %s", resp.StatusCode, string(respBody))
-	}
-
-	return nil
+	return c.SyncApplication(ctx, appName)
 }
 
 // DeployVersion deploys a specific version
