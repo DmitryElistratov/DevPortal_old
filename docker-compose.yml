@@ -78,14 +78,27 @@ services:
     volumes:
       - vault_data:/vault
 
-  # ArgoCD test stub for local development (no K8s cluster required).
-  # Emulates the ArgoCD REST API endpoints used by the backend:
+  # ============================================================================
+  # ⚠️  WARNING — MOCK ONLY, REMOVE BEFORE FINAL/PRODUCTION BUILD!  ⚠️
+  #
+  # This is a TEST STUB emulating the ArgoCD REST API for local development
+  # (no Kubernetes cluster required). It does NOT perform real deployments.
+  #
+  # For the final build you MUST:
+  #   1. Delete this entire `argocd:` service block from docker-compose.yml
+  #      (and optionally the ./scripts/argocd-mock directory).
+  #   2. Deploy a real ArgoCD instance (e.g. into your K8s cluster) and point
+  #      the portal integration (Settings → Integrations → ArgoCD URL) to the
+  #      real ArgoCD API server, then re-run Test Connection + Sync.
+  #
+  # Emulated endpoints:
   #   POST /api/v1/session            -> basic auth admin/admin, returns token
   #   GET  /api/v1/applications       -> list apps (seeded with demo apps)
   #   POST /api/v1/applications/<name>/sync -> sync action
-  #   PUT  /api/v1/applications/<name>PUT  /api/v1/applications/<name>        -> JSON-patch (targetRevision, canary annotations)
+  #   PATCH /api/v1/applications/<name>      -> JSON-patch (targetRevision, canary annotations)
   # UI/API in Settings integration URL: http://argocd:8080 (from docker network)
   # or http://localhost:8085 from the host. Login: admin / admin
+  # ============================================================================
   argocd:
     image: node:20-alpine
     working_dir: /app

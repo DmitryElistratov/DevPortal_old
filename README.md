@@ -219,6 +219,17 @@ GITLAB_REDIRECT_URI=http://localhost:8080/auth/callback/gitlab
 - Статус синхронизации и здоровья
 - Ручной sync приложений
 - Мониторинг деплоев
+- Canary deployment (traffic split через JSON-patch Rollouts)
+
+> ⚠️ **ВАЖНО — MOCK ArgoCD для тестов!**
+> В `docker-compose.yml` добавлен сервис `argocd` (`scripts/argocd-mock/server.js`) —
+> это заглушка, эмулирующая REST API ArgoCD для локальной разработки без K8s-кластера.
+> **При окончательной (production) сборке проекта этот мок необходимо удалить:**
+> 1. Убрать сервис `argocd:` из `docker-compose.yml` (и каталог `scripts/argocd-mock`).
+> 2. Развернуть реальный ArgoCD (в K8s-кластере) и в портале (Settings → Integrations)
+>    указать URL настоящего ArgoCD API server, затем выполнить Test Connection + Sync.
+> 3. Аналогично проверить, что все остальные интеграции (GitLab, Jira, Vault, Grafana,
+>    Graylog, Kubernetes) переключены на реальные инстансы, а не локальные dev-контейнеры.
 
 ### Kubernetes
 - Pods, Deployments, Services
