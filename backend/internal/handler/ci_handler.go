@@ -19,11 +19,12 @@ import (
 type CIHandler struct {
 	repo        *repository.IntegrationRepository
 	serviceRepo *repository.ServiceRepository
+	releaseRepo *repository.ReleaseRepository
 	fallback    *gitlab.Client
 }
 
-func NewCIHandler(repo *repository.IntegrationRepository, serviceRepo *repository.ServiceRepository, fallback *gitlab.Client) *CIHandler {
-	return &CIHandler{repo: repo, serviceRepo: serviceRepo, fallback: fallback}
+func NewCIHandler(repo *repository.IntegrationRepository, serviceRepo *repository.ServiceRepository, releaseRepo *repository.ReleaseRepository, fallback *gitlab.Client) *CIHandler {
+	return &CIHandler{repo: repo, serviceRepo: serviceRepo, releaseRepo: releaseRepo, fallback: fallback}
 }
 
 // client возвращает клиента из активной интеграции gitlab (свежие credentials),
@@ -252,4 +253,138 @@ func (h *CIHandler) ListMergeRequests(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, mrs)
+}
+
+// ---------- Release quality: security & test assessment ----------
+
+// resolveProjectByServiceID — project path из репозитория сервиса по его ID.
+func (h *CIHandler) resolveProjectByServiceID(serviceID string) (string, error) {
+	if h.serviceRepo == nil {
+		return "", fmt.Errorf("service repository not available")
+	}
+	svc, err := h.serviceRepo.GetByID(serviceID)
+	if err != nil || svc == nil {
+		return "", fmt.Errorf("service %q not found", serviceID)
+	}
+	repo := strings.TrimSpace(svc.Repository)
+	if repo == "" {
+		return "", fmt.Errorf("service %q has no git repository configured", svc.Name)
+	}
+	path := repo
+	if u, err := url.Parse(repo); err == nil && u.Host != "" {
+		path = strings.Trim(u.Path, "/")
+	} else {
+		path = strings.TrimPrefix(path, "git@")
+		if i := strings.Index(path, ":"); i >= 0 && !strings.Contains(path[:i], "/") {
+			path = path[i+1:]
+		}
+	}
+	path = strings.TrimSuffix(path, ".git")
+	if path == "" {
+		return "", fmt.Errorf("cannot derive GitLab project from repository %q", repo)
+	}
+	return url.PathEscape(path), nil
+}
+
+// ReleaseSecurity GET /api/releases/:id/security?refresh=1
+// Оценка безопасности релиза по данным GitLab Security Reports для ветки/коммита релиза.
+func (h *CIHandler) ReleaseSecurity(c *gin.Context) {
+	client, _, _ := h.client()
+	if client == nil {
+		h.noIntegration(c)
+		return
+	}
+	rel, err := h.releaseRepo.GetByID(c.Param("id"))
+	if err != nil || rel == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "release not found"})
+		return
+	}
+	project, err := h.resolveProjectByServiceID(rel.ServiceID)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"available": false, "error": err.Error(), "ref": rel.Branch})
+		return
+	}
+	ref := rel.GitCommit
+	if ref == "" {
+		ref = rel.Branch
+	}
+	report, err := client.GetSecurityReport(context.Background(), project, ref)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	grade := "unknown"
+	switch {
+	case !report.Available:
+		grade = "not-scanned"
+	case report.Critical > 0:
+		grade = "F"
+	case report.High > 0:
+		grade = "D"
+	case report.Medium > 0:
+		grade = "C"
+	case report.Low+report.Unknown > 0:
+		grade = "B"
+	default:
+		grade = "A"
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"releaseId": rel.ID,
+		"ref":       ref,
+		"grade":     grade,
+		"report":    report,
+	})
+}
+
+// ReleaseTests GET /api/releases/:id/tests
+// Результаты тестов последнего пайплайна на ветке релиза.
+func (h *CIHandler) ReleaseTests(c *gin.Context) {
+	client, _, _ := h.client()
+	if client == nil {
+		h.noIntegration(c)
+		return
+	}
+	rel, err := h.releaseRepo.GetByID(c.Param("id"))
+	if err != nil || rel == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "release not found"})
+		return
+	}
+	project, err := h.resolveProjectByServiceID(rel.ServiceID)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"status": "none", "error": err.Error(), "ref": rel.Branch})
+		return
+	}
+	ref := rel.Branch
+	if ref == "" {
+		ref = rel.GitCommit
+	}
+	summary, err := client.GetTestSummary(context.Background(), project, ref)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	verdict := "unknown"
+	switch strings.ToLower(summary.Status) {
+	case "success":
+		verdict = "passed"
+	case "failed":
+		verdict = "failed"
+	case "running", "pending", "created":
+		verdict = "running"
+	case "canceled", "skipped", "manual":
+		verdict = "skipped"
+	}
+	if summary.Total > 0 {
+		if summary.Failed > 0 {
+			verdict = "failed"
+		} else if summary.Passed > 0 {
+			verdict = "passed"
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"releaseId": rel.ID,
+		"ref":       ref,
+		"verdict":   verdict,
+		"summary":   summary,
+	})
 }

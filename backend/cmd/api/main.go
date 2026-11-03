@@ -173,7 +173,7 @@ func main() {
 	graylogHandler := handler.NewGraylogHandler(graylogService)
 	vaultHandler := handler.NewVaultHandler(vaultService)
 	testOpsHandler := handler.NewTestOpsHandler(testOpsRepo)
-	ciHandler := handler.NewCIHandler(integrationRepo, serviceRepo, gitlabClient)
+	ciHandler := handler.NewCIHandler(integrationRepo, serviceRepo, releaseRepo, gitlabClient)
 
 	// Router
 	router := gin.Default()
@@ -272,6 +272,11 @@ func main() {
 			releases.POST("/:id/deploy", releaseHandler.Deploy)
 			releases.POST("/:id/rollback", releaseHandler.Rollback)
 			releases.POST("/:id/approve", releaseHandler.Approve)
+			// Quality assessment from GitLab CI (security reports & test results)
+			if ciHandler != nil {
+				releases.GET("/:id/security", ciHandler.ReleaseSecurity)
+				releases.GET("/:id/tests", ciHandler.ReleaseTests)
+			}
 		}
 
 		// Audit

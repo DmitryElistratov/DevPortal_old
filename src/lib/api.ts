@@ -185,6 +185,15 @@ class ApiClient {
     return this.request<any[]>(`/ci/tags?${params.toString()}`);
   }
 
+  // Release quality assessment (from GitLab CI: security reports & test results)
+  async getReleaseSecurity(releaseId: string) {
+    return this.request<any>(`/releases/${releaseId}/security`);
+  }
+
+  async getReleaseTests(releaseId: string) {
+    return this.request<any>(`/releases/${releaseId}/tests`);
+  }
+
   // Jira Integration
   async listJiraTasks(projectKey?: string) {
     const query = projectKey ? `?projectKey=${projectKey}` : '';
