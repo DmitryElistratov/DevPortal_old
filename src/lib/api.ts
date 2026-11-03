@@ -168,13 +168,21 @@ class ApiClient {
     return this.request<any[]>(`/audit?limit=${limit}&offset=${offset}`);
   }
 
-  // Git Integration
-  async listGitBranches(projectId: string) {
-    return this.request<any[]>(`/git/branches?projectId=${projectId}`);
+  // Git Integration — реальные ветки/теги из GitLab через интеграцию портала.
+  // project: числовой ID или URL-encoded path (group/project). Если не задан —
+  // берётся из репозитория сервиса serviceId.
+  async listGitBranches(projectId?: string, serviceId?: string) {
+    const params = new URLSearchParams();
+    if (projectId) params.set('project', projectId);
+    if (serviceId) params.set('serviceId', serviceId);
+    return this.request<any[]>(`/ci/branches?${params.toString()}`);
   }
 
-  async listGitTags(projectId: string) {
-    return this.request<any[]>(`/git/tags?projectId=${projectId}`);
+  async listGitTags(projectId?: string, serviceId?: string) {
+    const params = new URLSearchParams();
+    if (projectId) params.set('project', projectId);
+    if (serviceId) params.set('serviceId', serviceId);
+    return this.request<any[]>(`/ci/tags?${params.toString()}`);
   }
 
   // Jira Integration

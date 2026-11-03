@@ -173,7 +173,7 @@ func main() {
 	graylogHandler := handler.NewGraylogHandler(graylogService)
 	vaultHandler := handler.NewVaultHandler(vaultService)
 	testOpsHandler := handler.NewTestOpsHandler(testOpsRepo)
-	ciHandler := handler.NewCIHandler(integrationRepo, gitlabClient)
+	ciHandler := handler.NewCIHandler(integrationRepo, serviceRepo, gitlabClient)
 
 	// Router
 	router := gin.Default()
@@ -256,6 +256,7 @@ func main() {
 		{
 			services.GET("", serviceHandler.List)
 			services.GET("/:id", serviceHandler.Get)
+			services.GET("/:id/branches", ciHandler.ListBranchesForService)
 			services.POST("", middleware.RequireRole("admin"), serviceHandler.Create)
 			services.PUT("/:id", middleware.RequireRole("admin"), serviceHandler.Update)
 			services.DELETE("/:id", middleware.RequireRole("admin"), serviceHandler.Delete)
@@ -418,6 +419,8 @@ func main() {
 			ci.POST("/pipelines", ciHandler.TriggerPipeline)
 			ci.GET("/pipelines/:pipelineId/jobs", ciHandler.GetPipelineJobs)
 			ci.GET("/merge-requests", ciHandler.ListMergeRequests)
+                ci.GET("/branches", ciHandler.ListBranches)
+                ci.GET("/tags", ciHandler.ListTags)
 		}
 	}
 
