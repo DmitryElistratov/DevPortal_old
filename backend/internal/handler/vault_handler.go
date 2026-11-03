@@ -26,6 +26,14 @@ func (h *VaultHandler) GetSecret(c *gin.Context) {
 		return
 	}
 
+	// A KV v2 soft-deleted or destroyed version returns 200 with empty data and
+	// non-empty deletion markers — surface that as 404 so the GUI doesn't render
+	// a phantom secret entry.
+	if len(secret.Data) == 0 && (secret.Metadata.DeletionTime != "" || secret.Metadata.Destroyed) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "secret not found or deleted"})
+		return
+	}
+
 	c.JSON(http.StatusOK, secret)
 }
 

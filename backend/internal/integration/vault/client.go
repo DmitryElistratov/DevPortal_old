@@ -76,11 +76,21 @@ func normalizePath(path string) string {
 }
 
 func (c *Client) doJSON(ctx context.Context, method, url string, body io.Reader) (int, []byte, error) {
+	// Vault's HTTP API implements LIST as GET with the X-Vault-Method header;
+	// a literal "LIST" verb is not valid HTTP and fails against real Vault.
+	vaultList := false
+	if method == "LIST" {
+		vaultList = true
+		method = http.MethodGet
+	}
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return 0, nil, err
 	}
 	req.Header.Set("X-Vault-Token", c.token)
+	if vaultList {
+		req.Header.Set("X-Vault-Method", "LIST")
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -109,7 +119,11 @@ func (c *Client) GetSecret(ctx context.Context, path string) (*Secret, error) {
 		if err := json.Unmarshal(body, &result); err != nil {
 			return nil, err
 		}
-		return &result.Data, nil
+		// KV v2 response nests the payload under data.data; if that inner map is
+		// missing (or empty) fall through to the KV v1 shape below.
+		if len(result.Data.Data) > 0 {
+			return &result.Data, nil
+		}
 	}
 
 	// Fallback to KV v1: /v1/<mount>/<path>
@@ -238,34 +252,28 @@ func (c *Client) ListSecrets(ctx context.Context, path string) ([]string, error)
 		rel += "/"
 	}
 
-	// KV v2: LIST /v1/secret/metadata/<path>
-	listURL := fmt.Sprintf("%s/v1/secret/metadata/%s", c.baseURL, rel)
-	statusCode, body, err := c.doJSON(ctx, "LIST", listURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	// Some Vault builds reject the LIST verb; retry with X-Vault-Method header
-	if statusCode == http.StatusMethodNotAllowed || statusCode == http.StatusNotFound && len(body) == 0 {
-		req, _ := http.NewRequestWithContext(ctx, "GET", listURL, nil)
-		req.Header.Set("X-Vault-Token", c.token)
-		req.Header.Set("X-Vault-Method", "LIST")
-		resp, err := c.httpClient.Do(req)
-		if err == nil {
-			defer resp.Body.Close()
-			body, _ = io.ReadAll(resp.Body)
-			statusCode = resp.StatusCode
-		}
-	}
-	if statusCode == http.StatusOK {
+	extractKeys := func(body []byte) ([]string, bool) {
 		var result struct {
 			Data struct {
 				Keys []string `json:"keys"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(body, &result); err != nil {
-			return nil, err
+			return nil, false
 		}
-		return result.Data.Keys, nil
+		return result.Data.Keys, true
+	}
+
+	// KV v2: LIST /v1/secret/metadata/<path> (doJSON translates LIST into
+	// GET + X-Vault-Method: LIST, which is how Vault's HTTP API implements it)
+	statusCode, body, err := c.doJSON(ctx, "LIST", fmt.Sprintf("%s/v1/secret/metadata/%s", c.baseURL, rel), nil)
+	if err != nil {
+		return nil, err
+	}
+	if statusCode == http.StatusOK {
+		if keys, ok := extractKeys(body); ok && keys != nil {
+			return keys, nil
+		}
 	}
 
 	// KV v1 fallback: LIST /v1/secret/<path>
@@ -274,18 +282,14 @@ func (c *Client) ListSecrets(ctx context.Context, path string) ([]string, error)
 		return nil, err
 	}
 	if statusCode == http.StatusOK {
-		var result struct {
-			Data struct {
-				Keys []string `json:"keys"`
-			} `json:"data"`
+		if keys, ok := extractKeys(body); ok && keys != nil {
+			return keys, nil
 		}
-		if err := json.Unmarshal(body, &result); err != nil {
-			return nil, err
-		}
-		return result.Data.Keys, nil
 	}
 
-	// Empty/nonexistent directory -> empty list, not an error
+	// Empty/nonexistent directory -> empty list, not an error.
+	// Real Vault answers 404 {"errors":[]} for listing a missing path and also
+	// for a path that holds a leaf secret rather than a directory.
 	if statusCode == http.StatusNotFound {
 		return []string{}, nil
 	}
