@@ -346,13 +346,32 @@ func main() {
 		// Vault Integration
 		vault := api.Group("/vault")
 		{
+			// NOTE: use a wildcard (*path) instead of ":path" — Gin treats ":" params as
+			// single-segment, so nested secret paths like /vault/secrets/secret/my/database
+			// returned 404. Handlers must strip the leading "/" from c.Param("path").
 			vault.GET("/secrets", vaultHandler.ListSecrets)
-			vault.POST("/secrets/:path", vaultHandler.WriteSecret)
-			vault.PUT("/secrets/:path", vaultHandler.UpdateSecret)
-			vault.GET("/secrets/:path/versions", vaultHandler.ListVersions)
-			vault.POST("/secrets/:path/restore", vaultHandler.RestoreVersion)
-			vault.GET("/secrets/:path", vaultHandler.GetSecret)
-			vault.DELETE("/secrets/:path", vaultHandler.DeleteSecret)
+			vault.POST("/secrets/*path", func(c *gin.Context) {
+				p := strings.TrimPrefix(c.Param("path"), "/")
+				if strings.HasSuffix(p, "/restore") {
+					vaultHandler.RestoreVersion(c, strings.TrimSuffix(p, "/restore"))
+					return
+				}
+				if strings.HasSuffix(p, "/versions") {
+					vaultHandler.ListVersions(c, strings.TrimSuffix(p, "/versions"))
+					return
+				}
+				vaultHandler.WriteSecret(c)
+			})
+			vault.PUT("/secrets/*path", vaultHandler.UpdateSecret)
+			vault.DELETE("/secrets/*path", vaultHandler.DeleteSecret)
+			vault.GET("/secrets/*path", func(c *gin.Context) {
+				p := strings.TrimPrefix(c.Param("path"), "/")
+				if strings.HasSuffix(p, "/versions") {
+					vaultHandler.ListVersions(c, strings.TrimSuffix(p, "/versions"))
+					return
+				}
+				vaultHandler.GetSecret(c)
+			})
 			vault.GET("/health", vaultHandler.Health)
 		}
 	}
