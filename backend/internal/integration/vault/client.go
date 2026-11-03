@@ -141,7 +141,7 @@ func (c *Client) resolveEngine(ctx context.Context) kvEngine {
 	if time.Since(c.engineChecked) < 30*time.Second {
 		return c.engine
 	}
-	if c.probeWriteable(ctx, c.engine) {
+	if c.probeEngineAlive(ctx, c.engine) {
 		c.engineChecked = time.Now()
 		return c.engine
 	}
@@ -226,20 +226,17 @@ func (c *Client) detectEngine(ctx context.Context) kvEngine {
 		}
 	}
 
-	// 2) Write-probe fallback (no sys/ permissions needed): try KV v2 first.
-	probeKey := "__portal_probe__"
-	v2Payload := bytes.NewReader([]byte(`{"data":{"` + probeKey + `":"1"}}`))
-	if st, _, err := c.doJSON(ctx, "POST", fmt.Sprintf("%s/v1/secret/data/%s", c.baseURL, probeKey), v2Payload); err == nil && (st == http.StatusOK || st == http.StatusNoContent || st == http.StatusCreated) {
-		// confirm it really behaves as v2 (versions endpoint exists)
-		if stv, _, _ := c.doJSON(ctx, "GET", fmt.Sprintf("%s/v1/secret/kv_versions/%s?list=true", c.baseURL, probeKey), nil); stv == http.StatusOK {
-			return kvEngine{Mount: "secret", Version: 2}
-		}
-		// write under data/ succeeded but no versions -> some proxy semantics; still treat as v2
+	// 2) LIST-probe fallback (no sys/ permissions needed and leaves no test
+	// secrets behind): an existing KV engine answers LIST on its mount root
+	// with 200; anything else falls through to auto-mount handling by caller.
+	listOK := func(url string) bool {
+		st, _, err := c.doJSON(ctx, "LIST", url, nil)
+		return err == nil && st == http.StatusOK
+	}
+	if listOK(fmt.Sprintf("%s/v1/secret/metadata/", c.baseURL)) {
 		return kvEngine{Mount: "secret", Version: 2}
 	}
-	// try KV v1-style direct write
-	v1Payload := bytes.NewReader([]byte(`{"` + probeKey + `":"1"}`))
-	if st, _, err := c.doJSON(ctx, "POST", fmt.Sprintf("%s/v1/secret/%s", c.baseURL, probeKey), v1Payload); err == nil && (st == http.StatusOK || st == http.StatusNoContent || st == http.StatusCreated) {
+	if listOK(fmt.Sprintf("%s/v1/secret", c.baseURL)) {
 		return kvEngine{Mount: "secret", Version: 1}
 	}
 
@@ -532,20 +529,34 @@ func (c *Client) ensureKVSecretMount(ctx context.Context) bool {
 	return false
 }
 
-// probeWriteable verifies that the detected KV engine actually accepts writes
-// at <mount>/data/probe (KV v2). Fresh dev-mode Vault containers lose their
-// /vault/file storage on restart, so sys/mounts can report a stale KV v2
-// entry while every data write answers 404. When this happens we re-run the
-// auto-mount (which Vault rejects as "already in use" only if the mount truly
-// works) and force re-detection. Returns true when writes are OK.
-func (c *Client) probeWriteable(ctx context.Context, e kvEngine) bool {
-	probeKey := "__portal_write_probe__"
-	payload := bytes.NewReader([]byte(`{"data":{"` + probeKey + `":"1"}}`))
-	statusCode, _, err := c.doJSON(ctx, "POST", c.baseURL+e.readPath(probeKey), payload)
+// probeEngineAlive verifies that the detected KV engine is still reachable by
+// issuing a LIST on its metadata root — a read-only check that leaves no test
+// secrets behind. Fresh dev-mode Vault containers lose their /vault/file
+// storage on restart, so sys/mounts can report a stale KV entry while every
+// operation answers 404; when that happens the caller re-runs auto-mount and
+// re-detection. Returns true when the engine responds to LIST (200 even for an
+// empty store).
+func (c *Client) probeEngineAlive(ctx context.Context, e kvEngine) bool {
+	url := fmt.Sprintf("%s/v1/%s/metadata/", c.baseURL, e.Mount)
+	if e.Version == 1 {
+		url = fmt.Sprintf("%s/v1/%s", c.baseURL, e.Mount)
+	}
+	statusCode, _, err := c.doJSON(ctx, "LIST", url, nil)
 	if err != nil {
 		return false
 	}
-	return statusCode == http.StatusOK || statusCode == http.StatusNoContent || statusCode == http.StatusCreated
+	if statusCode != http.StatusOK {
+		// fall back to the other layout before declaring the engine dead
+		alt := fmt.Sprintf("%s/v1/%s", c.baseURL, e.Mount)
+		if e.Version == 1 {
+			alt = fmt.Sprintf("%s/v1/%s/metadata/", c.baseURL, e.Mount)
+		}
+		statusCode, _, err = c.doJSON(ctx, "LIST", alt, nil)
+		if err != nil {
+			return false
+		}
+	}
+	return statusCode == http.StatusOK
 }
 
 // ListSecrets lists secret keys at a path, supporting KV v2 (metadata endpoint)
