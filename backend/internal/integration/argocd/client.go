@@ -4,12 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 )
+
+// ErrNoIntegration is returned when no enabled ArgoCD integration with a
+// valid URL and token is configured in the portal.
+var ErrNoIntegration = errors.New("no enabled ArgoCD integration found — configure it in Settings (URL + token), press Test Connection and Sync")
 
 type Client struct {
 	baseURL    string

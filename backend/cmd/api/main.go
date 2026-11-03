@@ -174,6 +174,8 @@ func main() {
 	vaultHandler := handler.NewVaultHandler(vaultService)
 	testOpsHandler := handler.NewTestOpsHandler(testOpsRepo)
 	ciHandler := handler.NewCIHandler(integrationRepo, serviceRepo, releaseRepo, gitlabClient)
+	argoHandler := handler.NewArgoCDHandler(integrationRepo)
+
 
 	// Router
 	router := gin.Default()
@@ -338,13 +340,22 @@ func main() {
 			jira.POST("/issues/:key/link", jiraHandler.LinkIssueToRelease)
 		}
 
-		// Kubernetes Integration
+		// Kubernetes Integration (raw cluster reads — used for pod logs etc.)
 		k8s := api.Group("/kubernetes")
 		{
 			k8s.GET("/pods", kubernetesHandler.ListPods)
 			k8s.GET("/deployments", kubernetesHandler.ListDeployments)
 			k8s.GET("/services", kubernetesHandler.ListServices)
 			k8s.GET("/pods/:name/logs", kubernetesHandler.GetPodLogs)
+		}
+
+		// ArgoCD Integration — GitOps-native deployment view & control.
+		// This is the canonical source of truth for what is deployed where.
+		argocdGroup := api.Group("/argocd")
+		{
+			argocdGroup.GET("/applications", argoHandler.ListApplications)
+			argocdGroup.GET("/applications/:name", argoHandler.GetApplication)
+			argocdGroup.POST("/applications/:name/sync", argoHandler.SyncApplication)
 		}
 
 		// Grafana Integration
