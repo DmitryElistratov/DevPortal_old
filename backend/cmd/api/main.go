@@ -154,6 +154,7 @@ func main() {
 	vaultService.WithIntegrationRepo(integrationRepo)
 
 	// Handlers
+	testOpsRepo := repository.NewTestOpsRepository(db)
 	authHandler := handler.NewAuthHandler(authService)
 	serviceHandler := handler.NewServiceHandler(serviceMgmtService)
 	releaseHandler := handler.NewReleaseHandler(releaseService)
@@ -171,6 +172,8 @@ func main() {
 	grafanaHandler := handler.NewGrafanaHandler(grafanaService)
 	graylogHandler := handler.NewGraylogHandler(graylogService)
 	vaultHandler := handler.NewVaultHandler(vaultService)
+	testOpsHandler := handler.NewTestOpsHandler(testOpsRepo)
+	ciHandler := handler.NewCIHandler(integrationRepo, gitlabClient)
 
 	// Router
 	router := gin.Default()
@@ -385,6 +388,36 @@ func main() {
 				vaultHandler.GetSecret(c)
 			})
 			vault.GET("/health", vaultHandler.Health)
+		}
+
+		// TestOps: test runs, QA checklists and executions
+		testruns := api.Group("/testruns")
+		{
+			testruns.GET("", testOpsHandler.ListTestRuns)
+			testruns.POST("", testOpsHandler.CreateTestRun)
+			testruns.GET("/:id", testOpsHandler.GetTestRun)
+			testruns.PUT("/:id", testOpsHandler.UpdateTestRun)
+			testruns.DELETE("/:id", testOpsHandler.DeleteTestRun) // soft-delete only
+		}
+		checklists := api.Group("/checklists")
+		{
+			checklists.GET("", testOpsHandler.ListChecklists)
+			checklists.POST("", testOpsHandler.CreateChecklist)
+			checklists.GET("/:id", testOpsHandler.GetChecklist)
+			checklists.PUT("/:id", testOpsHandler.UpdateChecklist)
+			checklists.DELETE("/:id", testOpsHandler.DeleteChecklist) // soft-delete only
+		}
+		api.POST("/checklist-executions", testOpsHandler.CreateExecution)
+		api.GET("/checklist-executions", testOpsHandler.ListExecutions)
+		api.PUT("/checklist-executions/:id", testOpsHandler.UpdateExecution)
+
+		// CI/CD proxy (GitLab pipelines/jobs/MR via saved integration)
+		ci := api.Group("/ci")
+		{
+			ci.GET("/pipelines", ciHandler.ListPipelines)
+			ci.POST("/pipelines", ciHandler.TriggerPipeline)
+			ci.GET("/pipelines/:pipelineId/jobs", ciHandler.GetPipelineJobs)
+			ci.GET("/merge-requests", ciHandler.ListMergeRequests)
 		}
 	}
 

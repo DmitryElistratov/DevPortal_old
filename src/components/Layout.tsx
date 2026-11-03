@@ -29,6 +29,7 @@ const navGroups = [
       { path: '/catalog', label: 'Catalog', icon: Layers },
       { path: '/releases', label: 'Releases', icon: GitBranch },
       { path: '/canary', label: 'Canary Deployments', icon: Rocket },
+      { path: '/tests', label: 'Tests / TestOps', icon: ClipboardList },
       { path: '/deployments', label: 'Deployments', icon: Cloud },
       { path: '/kube-api', label: 'Kubernetes API', icon: Terminal },
     ],
