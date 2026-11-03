@@ -78,6 +78,30 @@ services:
     volumes:
       - vault_data:/vault
 
+  # ArgoCD test stub for local development (no K8s cluster required).
+  # Emulates the ArgoCD REST API endpoints used by the backend:
+  #   POST /api/v1/session            -> basic auth admin/admin, returns token
+  #   GET  /api/v1/applications       -> list apps (seeded with demo apps)
+  #   POST /api/v1/applications/<name>/sync -> sync action
+  #   PUT  /api/v1/applications/<name>PUT  /api/v1/applications/<name>        -> JSON-patch (targetRevision, canary annotations)
+  # UI/API in Settings integration URL: http://argocd:8080 (from docker network)
+  # or http://localhost:8085 from the host. Login: admin / admin
+  argocd:
+    image: node:20-alpine
+    working_dir: /app
+    command: ["node", "server.js"]
+    ports:
+      - "8085:8080"   # ArgoCD-compatible HTTP API
+    volumes:
+      - ./scripts/argocd-mock:/app:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/v1/applications"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   # GitLab CE (Source Code Management)
   gitlab:
     image: gitlab/gitlab-ce:16.8.0-ce.0
