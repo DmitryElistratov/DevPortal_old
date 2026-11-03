@@ -76,13 +76,24 @@ func normalizePath(path string) string {
 	return p
 }
 
-func (c *Client) doJSON(ctx context.Context, method, url string, body io.Reader) (int, []byte, error) {
-	// Vault's HTTP API implements LIST as GET with the X-Vault-Method header;
-	// a literal "LIST" verb is not valid HTTP and fails against real Vault.
+func (c *Client) doJSON(ctx context.Context, method, rawURL string, body io.Reader) (int, []byte, error) {
+	// Vault's HTTP API implements LIST two equivalent ways:
+	//   1. literal "LIST" verb (only proxied correctly by some setups);
+	//   2. GET with either the X-Vault-Method header or ?list=true query param.
+	// We send GET + header + query param simultaneously — this works on every
+	// storage backend (inmem/dev, file, raft, consul).
 	vaultList := false
+	url := rawURL
 	if method == "LIST" {
 		vaultList = true
 		method = http.MethodGet
+		if strings.Contains(url, "?") {
+			if !strings.Contains(url, "list=") {
+				url += "&list=true"
+			}
+		} else {
+			url += "?list=true"
+		}
 	}
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
@@ -90,10 +101,7 @@ func (c *Client) doJSON(ctx context.Context, method, url string, body io.Reader)
 	}
 	req.Header.Set("X-Vault-Token", c.token)
 	if vaultList {
-		// file/raft storage backends only understand the header-based LIST;
-		// dev-server/Consul accept both. Send headers so every deployment works.
 		req.Header.Set("X-Vault-Method", "LIST")
-		req.Header.Set("X-Vault-List", "true")
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -245,14 +253,37 @@ func (c *Client) RestoreVersion(ctx context.Context, path string, version int) e
 	return fmt.Errorf("vault API error: %d - %s", statusCode, string(body))
 }
 
+// ensureKVSecretMount attempts to enable a KV v2 secrets engine at the
+// default "secret/" mount. This makes the portal self-healing: if Vault was
+// started without a mounted KV store (or with an empty file/raft backend),
+// the first LIST that returns 404 triggers one-time setup and retry.
+func (c *Client) ensureKVSecretMount(ctx context.Context) bool {
+	payload := bytes.NewReader([]byte(`{"type":"kv","options":{"version":"2"}}`))
+	statusCode, body, err := c.doJSON(ctx, "POST", fmt.Sprintf("%s/v1/sys/mounts/secret", c.baseURL), payload)
+	if err != nil {
+		log.Printf("[Vault] auto-mount request failed: %v", err)
+		return false
+	}
+	if statusCode == http.StatusOK || statusCode == http.StatusNoContent || statusCode == http.StatusCreated {
+		log.Printf("[Vault] KV v2 secrets engine auto-mounted at secret/")
+		return true
+	}
+	// path already in use -> mount exists, nothing to do
+	if statusCode == http.StatusBadRequest && strings.Contains(string(body), "path is already in use") {
+		return false
+	}
+	log.Printf("[Vault] auto-mount KV v2 returned %d - %.200s", statusCode, string(body))
+	return false
+}
+
 // ListSecrets lists secret keys at a path, supporting KV v2 (metadata endpoint)
 // and KV v1 (LIST verb on the path itself). A 404 on an empty/nonexistent
-// directory is treated as an empty list rather than an error.
+// directory is treated as an empty list rather than an error. If both LIST
+// attempts return 404 for the root listing, we try to auto-enable a KV v2
+// engine once and retry — this fixes the common "fresh dev Vault" case.
 func (c *Client) ListSecrets(ctx context.Context, path string) ([]string, error) {
 	rel := normalizePath(path)
-	if rel == "" {
-		rel = ""
-	} else if !strings.HasSuffix(rel, "/") {
+	if rel != "" && !strings.HasSuffix(rel, "/") {
 		rel += "/"
 	}
 
@@ -268,27 +299,43 @@ func (c *Client) ListSecrets(ctx context.Context, path string) ([]string, error)
 		return result.Data.Keys, true
 	}
 
-	// KV v2: LIST /v1/secret/metadata/<path>
-	v2Status, v2Body, err := c.doJSON(ctx, "LIST", fmt.Sprintf("%s/v1/secret/metadata/%s", c.baseURL, rel), nil)
-	if err != nil {
-		return nil, err
-	}
-	log.Printf("[Vault] LIST metadata %q -> %d %.200s", rel, v2Status, string(v2Body))
-	if v2Status == http.StatusOK {
-		if keys, ok := extractKeys(v2Body); ok && keys != nil {
-			return keys, nil
+	listOnce := func() (keys []string, found bool, notFound bool) {
+		// KV v2: LIST /v1/secret/metadata/<path>
+		v2Status, v2Body, err := c.doJSON(ctx, "LIST", fmt.Sprintf("%s/v1/secret/metadata/%s", c.baseURL, rel), nil)
+		if err != nil {
+			log.Printf("[Vault] LIST metadata %q transport error: %v", rel, err)
+			return nil, false, false
 		}
+		log.Printf("[Vault] LIST metadata %q -> %d %.200s", rel, v2Status, string(v2Body))
+		if v2Status == http.StatusOK {
+			if k, ok := extractKeys(v2Body); ok && k != nil {
+				return k, true, false
+			}
+		}
+		// KV v1 fallback: LIST /v1/secret/<path>
+		v1Status, v1Body, err := c.doJSON(ctx, "LIST", fmt.Sprintf("%s/v1/secret/%s", c.baseURL, rel), nil)
+		if err != nil {
+			log.Printf("[Vault] LIST v1 %q transport error: %v", rel, err)
+			return nil, false, false
+		}
+		log.Printf("[Vault] LIST v1 %q -> %d %.200s", rel, v1Status, string(v1Body))
+		if v1Status == http.StatusOK {
+			if k, ok := extractKeys(v1Body); ok && k != nil {
+				return k, true, false
+			}
+		}
+		nf := v2Status == http.StatusNotFound && v1Status == http.StatusNotFound
+		return nil, false, nf
 	}
-	statusCode, body := v2Status, v2Body
 
-	// KV v1 fallback: LIST /v1/secret/<path>
-	statusCode, body, err = c.doJSON(ctx, "LIST", fmt.Sprintf("%s/v1/secret/%s", c.baseURL, rel), nil)
-	if err != nil {
-		return nil, err
+	keys, found, notFound := listOnce()
+	if found {
+		return keys, nil
 	}
-	log.Printf("[Vault] LIST v1 %q -> %d %.200s", rel, statusCode, string(body))
-	if statusCode == http.StatusOK {
-		if keys, ok := extractKeys(body); ok && keys != nil {
+
+	// Root listing that 404s on both engines usually means no KV mount exists.
+	if notFound && rel == "" && c.ensureKVSecretMount(ctx) {
+		if keys, found, _ = listOnce(); found {
 			return keys, nil
 		}
 	}
@@ -296,10 +343,10 @@ func (c *Client) ListSecrets(ctx context.Context, path string) ([]string, error)
 	// Empty/nonexistent directory -> empty list, not an error.
 	// Real Vault answers 404 {"errors":[]} for listing a missing path and also
 	// for a path that holds a leaf secret rather than a directory.
-	if statusCode == http.StatusNotFound {
+	if notFound {
 		return []string{}, nil
 	}
-	return nil, fmt.Errorf("vault API error: %d - %s", statusCode, string(body))
+	return nil, fmt.Errorf("vault LIST failed for path %q", rel)
 }
 
 // Health checks Vault health

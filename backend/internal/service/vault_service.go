@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/company/release-portal/internal/integration/vault"
 	"github.com/company/release-portal/internal/repository"
@@ -26,26 +27,56 @@ func (s *VaultService) WithIntegrationRepo(repo *repository.IntegrationRepositor
 	s.integration = repo
 }
 
+// cachedClient remembers URL+token so we only rebuild the client when the
+// integration config actually changed (prevents stale clients after edits).
+type cachedClient struct {
+	url   string
+	token string
+}
+
+var lastConfig *cachedClient
+
 // ensureClient returns a usable client, building one from the enabled "vault"
-// integration in the database if needed.
+// integration in the database if needed. The client is re-created whenever the
+// stored integration URL/token changes, so edits in Settings take effect
+// without restarting the backend.
 func (s *VaultService) ensureClient() (*vault.Client, error) {
-	if s.vaultClient != nil {
-		return s.vaultClient, nil
-	}
 	if s.integration == nil {
+		if s.vaultClient != nil {
+			return s.vaultClient, nil
+		}
 		return nil, fmt.Errorf("vault client not configured")
 	}
 	integrations, err := s.integration.GetEnabledByType("vault")
 	if err != nil || len(integrations) == 0 {
+		if s.vaultClient != nil && lastConfig == nil {
+			// fall back to startup-constructed client only if DB read failed
+			return s.vaultClient, nil
+		}
 		return nil, fmt.Errorf("no enabled Vault integration found; configure it in Settings")
 	}
 	it := integrations[0]
 	token, _ := it.Config["token"].(string)
 	if token == "" {
+		token, _ = it.Config["password"].(string)
+	}
+	if token == "" {
 		return nil, fmt.Errorf("Vault integration %q has no token configured", it.Name)
 	}
-	s.vaultClient = vault.NewClient(it.URL, token)
-	log.Printf("[Vault] Client lazily initialized from integration %q (%s)", it.Name, it.URL)
+	url := strings.TrimRight(it.URL, "/")
+	if url == "" {
+		url, _ = it.Config["url"].(string)
+		url = strings.TrimRight(url, "/")
+	}
+	if url == "" {
+		return nil, fmt.Errorf("Vault integration %q has no URL configured", it.Name)
+	}
+	// Rebuild only when config changed or client missing.
+	if s.vaultClient == nil || lastConfig == nil || lastConfig.url != url || lastConfig.token != token {
+		s.vaultClient = vault.NewClient(url, token)
+		lastConfig = &cachedClient{url: url, token: token}
+		log.Printf("[Vault] Client (re)initialized from integration %q (%s)", it.Name, url)
+	}
 	return s.vaultClient, nil
 }
 
