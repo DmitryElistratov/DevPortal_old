@@ -72,6 +72,19 @@ class ApiClient {
     }
   }
 
+  async oauthLogin(data: { provider: string; externalId: string; username?: string; email?: string; fullName?: string }) {
+    const response = await this.request<{ token: string; user: any }>('/auth/oauth', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+    this.setToken(response.token);
+    return response;
+  }
+
+  async listUsers() {
+    return this.request<any[]>('/users');
+  }
+
   async getMe() {
     return this.request<any>('/me');
   }

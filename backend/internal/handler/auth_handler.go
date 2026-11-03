@@ -57,3 +57,48 @@ func (h *AuthHandler) Me(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, user)
 }
+
+// ListUsers returns all portal users for the Users settings tab.
+func (h *AuthHandler) ListUsers(c *gin.Context) {
+	users, err := h.authService.ListUsers()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, users)
+}
+
+// OAuthLogin completes an external-provider login on the backend side.
+// The frontend obtains a verified identity from the provider (OIDC id_token,
+// GitHub/GitLab access token via their OAuth flow) and posts the resulting
+// profile here; the backend maps it to a local user and issues a portal JWT.
+func (h *AuthHandler) OAuthLogin(c *gin.Context) {
+	var req struct {
+		Provider   string `json:"provider"`
+		ExternalID string `json:"externalId"`
+		Username   string `json:"username"`
+		Email      string `json:"email"`
+		FullName   string `json:"fullName"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	switch req.Provider {
+	case "keycloak", "oidc", "github", "gitlab", "ldap":
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported auth provider: " + req.Provider})
+		return
+	}
+	if req.ExternalID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "externalId is required"})
+		return
+	}
+
+	resp, err := h.authService.LoginOAuth(req.Provider, req.ExternalID, req.Username, req.Email, req.FullName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}

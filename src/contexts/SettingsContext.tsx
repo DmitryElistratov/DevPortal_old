@@ -78,6 +78,20 @@ export interface VaultIntegration {
   lastSync?: string;
 }
 
+export interface AuthIntegration {
+  id: string;
+  name: string;
+  provider: 'keycloak' | 'github' | 'gitlab' | 'ldap';
+  url: string;
+  realm?: string;
+  clientId?: string;
+  clientSecret?: string;
+  bindDn?: string;
+  bindPassword?: string;
+  baseDn?: string;
+  enabled: boolean;
+}
+
 export interface Settings {
   gitIntegrations: GitIntegration[];
   jiraIntegrations: JiraIntegration[];
@@ -92,6 +106,7 @@ export interface Settings {
     realm: string;
     clientId: string;
   };
+  authIntegrations: AuthIntegration[];
   general: {
     companyName: string;
     defaultBranch: string;
@@ -145,6 +160,7 @@ const defaultSettings: Settings = {
   grafanaIntegrations: [],
   graylogIntegrations: [],
   vaultIntegrations: [],
+  authIntegrations: [],
   general: {
     companyName: 'Company Inc.',
     defaultBranch: 'main',
@@ -211,6 +227,46 @@ function toBackendPayload(frontendType: string, data: any): any {
       return { ...base, config: { username: rest.username || '', password: rest.password || '' } };
     case 'vault':
       return { ...base, config: { token: rest.token || '' } };
+    case 'keycloak':
+    case 'oidc':
+      return {
+        type: 'auth',
+        name: rest.name || '',
+        url: rest.url || '',
+        enabled: rest.enabled !== false,
+        config: {
+          provider: 'keycloak',
+          realm: rest.realm || '',
+          clientId: rest.clientId || '',
+          clientSecret: rest.clientSecret || '',
+        },
+      };
+    case 'github_oauth':
+    case 'gitlab_oauth':
+      return {
+        type: 'auth',
+        name: rest.name || '',
+        url: rest.url || (rest.provider === 'github' ? 'https://github.com' : 'https://gitlab.com'),
+        enabled: rest.enabled !== false,
+        config: {
+          provider: rest.provider === 'github' ? 'github' : 'gitlab',
+          clientId: rest.clientId || '',
+          clientSecret: rest.clientSecret || '',
+        },
+      };
+    case 'ldap':
+      return {
+        type: 'auth',
+        name: rest.name || '',
+        url: rest.url || '',
+        enabled: rest.enabled !== false,
+        config: {
+          provider: 'ldap',
+          bindDn: rest.bindDn || '',
+          bindPassword: rest.bindPassword || '',
+          baseDn: rest.baseDn || '',
+        },
+      };
     case 'notification':
       return {
         ...base,
@@ -261,6 +317,20 @@ function mapFromBackend(backendType: string, b: BackendIntegration): any {
       return { ...common, url: b.url, username: cfg.username || '', password: cfg.password || '' };
     case 'vault':
       return { ...common, url: b.url, token: cfg.token || '' };
+    case 'auth': {
+      const provider = cfg.provider || 'keycloak';
+      return {
+        ...common,
+        provider,
+        url: b.url,
+        realm: cfg.realm || '',
+        clientId: cfg.clientId || '',
+        clientSecret: cfg.clientSecret || '',
+        bindDn: cfg.bindDn || '',
+        bindPassword: cfg.bindPassword || '',
+        baseDn: cfg.baseDn || '',
+      };
+    }
     case 'notification':
       return {
         ...common,
@@ -305,6 +375,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const { gitIntegrations, jiraIntegrations, notificationIntegrations, argoIntegrations,
       kubernetesClusters, grafanaIntegrations, graylogIntegrations, vaultIntegrations,
+      authIntegrations,
       ...persistable } = settings;
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(persistable));
   }, [settings]);
@@ -323,6 +394,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       next.grafanaIntegrations = [];
       next.graylogIntegrations = [];
       next.vaultIntegrations = [];
+      next.authIntegrations = [];
       for (const item of list || []) {
         const mapped = mapFromBackend(item.type, item);
         if (GIT_TYPES.includes(item.type)) next.gitIntegrations.push(mapped);
@@ -333,6 +405,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         else if (item.type === 'grafana') next.grafanaIntegrations.push(mapped);
         else if (item.type === 'graylog') next.graylogIntegrations.push(mapped);
         else if (item.type === 'vault') next.vaultIntegrations.push(mapped);
+        else if (item.type === 'auth') next.authIntegrations.push(mapped);
       }
       setSettings(next);
     } catch (e: any) {

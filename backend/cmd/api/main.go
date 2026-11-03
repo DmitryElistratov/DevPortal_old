@@ -182,6 +182,7 @@ func main() {
         {
                 auth.POST("/login", authHandler.Login)
                 auth.POST("/register", authHandler.Register)
+                auth.POST("/oauth", authHandler.OAuthLogin)
         }
 
         // Protected routes
@@ -218,6 +219,7 @@ func main() {
 
                 // User
                 api.GET("/me", authHandler.Me)
+                api.GET("/users", middleware.RequireRole("admin"), authHandler.ListUsers)
 
                 // Integrations
                 integrations := api.Group("/integrations")
