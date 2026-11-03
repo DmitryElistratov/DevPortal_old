@@ -419,8 +419,8 @@ func main() {
 			ci.POST("/pipelines", ciHandler.TriggerPipeline)
 			ci.GET("/pipelines/:pipelineId/jobs", ciHandler.GetPipelineJobs)
 			ci.GET("/merge-requests", ciHandler.ListMergeRequests)
-                ci.GET("/branches", ciHandler.ListBranches)
-                ci.GET("/tags", ciHandler.ListTags)
+			ci.GET("/branches", ciHandler.ListBranches)
+			ci.GET("/tags", ciHandler.ListTags)
 		}
 	}
 
