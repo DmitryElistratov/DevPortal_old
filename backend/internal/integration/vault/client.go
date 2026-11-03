@@ -77,32 +77,19 @@ func normalizePath(path string) string {
 }
 
 func (c *Client) doJSON(ctx context.Context, method, rawURL string, body io.Reader) (int, []byte, error) {
-	// Vault's HTTP API implements LIST two equivalent ways:
-	//   1. literal "LIST" verb (only proxied correctly by some setups);
-	//   2. GET with either the X-Vault-Method header or ?list=true query param.
-	// We send GET + header + query param simultaneously — this works on every
-	// storage backend (inmem/dev, file, raft, consul).
-	vaultList := false
-	url := rawURL
-	if method == "LIST" {
-		vaultList = true
-		method = http.MethodGet
-		if strings.Contains(url, "?") {
-			if !strings.Contains(url, "list=") {
-				url += "&list=true"
-			}
-		} else {
-			url += "?list=true"
-		}
+	// Vault's HTTP API implements LIST via the literal "LIST" verb (the only
+	// officially documented way; hashicorp/vault handles it in its own router).
+	// Go's net/http supports arbitrary methods, so we send LIST directly.
+	// NOTE: GET+?list=true and X-Vault-Method headers are NOT honored by real
+	// Vault — earlier attempts using them produced persistent 404s.
+	if method == "LIST" && !strings.HasSuffix(rawURL, "/") {
+		rawURL += "/" // Vault requires a trailing slash for directory listings
 	}
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, body)
 	if err != nil {
 		return 0, nil, err
 	}
 	req.Header.Set("X-Vault-Token", c.token)
-	if vaultList {
-		req.Header.Set("X-Vault-Method", "LIST")
-	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -218,7 +205,9 @@ func (c *Client) DeleteSecret(ctx context.Context, path string) error {
 // ListVersions returns KV v2 version metadata for a secret path.
 func (c *Client) ListVersions(ctx context.Context, path string) ([]map[string]interface{}, error) {
 	rel := normalizePath(path)
-	statusCode, body, err := c.doJSON(ctx, "GET", fmt.Sprintf("%s/v1/secret/metadata/%s?list=true", c.baseURL, rel), nil)
+	// KV v2 version history lives in the "ca_metadata" (current) and
+	// "metadata" (all versions incl. deleted) sections of /secret/metadata/<path>.
+	statusCode, body, err := c.doJSON(ctx, "GET", fmt.Sprintf("%s/v1/secret/metadata/%s", c.baseURL, rel), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -227,13 +216,22 @@ func (c *Client) ListVersions(ctx context.Context, path string) ([]map[string]in
 	}
 	var result struct {
 		Data struct {
-			Versions []map[string]interface{} `json:"versions"`
+			Metadata struct {
+				Versions []map[string]interface{} `json:"versions"`
+			} `json:"metadata"`
+			CAMetadata struct {
+				Versions []map[string]interface{} `json:"versions"`
+			} `json:"cam_metadata"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, err
 	}
-	return result.Data.Versions, nil
+	versions := result.Data.Metadata.Versions
+	if len(versions) == 0 {
+		versions = result.Data.CAMetadata.Versions
+	}
+	return versions, nil
 }
 
 // RestoreVersion restores a previously deleted KV v2 version of a secret.
@@ -251,6 +249,42 @@ func (c *Client) RestoreVersion(ctx context.Context, path string, version int) e
 		return nil
 	}
 	return fmt.Errorf("vault API error: %d - %s", statusCode, string(body))
+}
+
+// diagnoseMounts fetches /v1/sys/mounts and logs all mounted secrets engines.
+// Used when a LIST fails with 404 so the backend log shows exactly what is
+// mounted in Vault (mount path + type/options) versus the hardcoded "secret/"
+// prefix our client uses — this pinpoints misconfigured integration URLs or
+// non-default mounts instead of a bare 404.
+func (c *Client) diagnoseMounts(ctx context.Context) {
+	statusCode, body, err := c.doJSON(ctx, "GET", fmt.Sprintf("%s/v1/sys/mounts", c.baseURL), nil)
+	if err != nil {
+		log.Printf("[Vault] diagnostics: sys/mounts request failed: %v", err)
+		return
+	}
+	if statusCode != http.StatusOK {
+		log.Printf("[Vault] diagnostics: sys/mounts -> %d %.300s (token may lack read access to sys/)", statusCode, string(body))
+		return
+	}
+	var result struct {
+		Data struct {
+			Mounts map[string]struct {
+				Type    string `json:"type"`
+				Options struct {
+					Version string `json:"version"`
+				} `json:"options"`
+			} `json:"mounts"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		log.Printf("[Vault] diagnostics: cannot parse sys/mounts: %v", err)
+		return
+	}
+	for path, m := range result.Data.Mounts {
+		if strings.Contains(m.Type, "kv") {
+			log.Printf("[Vault] diagnostics: KV engine mounted at %q (type=%s, version=%s)", path, m.Type, m.Options.Version)
+		}
+	}
 }
 
 // ensureKVSecretMount attempts to enable a KV v2 secrets engine at the
@@ -313,7 +347,7 @@ func (c *Client) ListSecrets(ctx context.Context, path string) ([]string, error)
 			}
 		}
 		// KV v1 fallback: LIST /v1/secret/<path>
-		v1Status, v1Body, err := c.doJSON(ctx, "LIST", fmt.Sprintf("%s/v1/secret/%s", c.baseURL, rel), nil)
+		v1Status, v1Body, err := c.doJSON(ctx, "LIST", fmt.Sprintf("%s/v1/secret/%s", c.baseURL, strings.TrimSuffix(rel, "/")), nil)
 		if err != nil {
 			log.Printf("[Vault] LIST v1 %q transport error: %v", rel, err)
 			return nil, false, false
@@ -338,6 +372,12 @@ func (c *Client) ListSecrets(ctx context.Context, path string) ([]string, error)
 		if keys, found, _ = listOnce(); found {
 			return keys, nil
 		}
+	}
+
+	// Still nothing — log what is actually mounted in Vault so the operator can
+	// see whether the engine lives under a non-default mount path.
+	if !found {
+		c.diagnoseMounts(ctx)
 	}
 
 	// Empty/nonexistent directory -> empty list, not an error.

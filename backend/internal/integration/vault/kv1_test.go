@@ -20,7 +20,7 @@ func TestListSecretsKVv1Only(t *testing.T) {
 	})
 	// KV v1 LIST: only valid when GET carries list=true or X-Vault-Method: LIST
 	mux.HandleFunc("/v1/secret/", func(w http.ResponseWriter, r *http.Request) {
-		isList := r.URL.Query().Get("list") == "true" || r.Header.Get("X-Vault-Method") == "LIST"
+		isList := r.Method == "LIST"
 		if !isList {
 			w.WriteHeader(404)
 			w.Write([]byte(`{"errors":["Invalid path for a versioned K/V secrets engine"]}`))

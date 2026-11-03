@@ -122,9 +122,15 @@ func main() {
 	// Load Vault integration
 	if vaultIntegrations, err := integrationRepo.GetEnabledByType("vault"); err == nil && len(vaultIntegrations) > 0 {
 		integration := vaultIntegrations[0]
-		if token, ok := integration.Config["token"].(string); ok {
+		token, _ := integration.Config["token"].(string)
+		if token == "" {
+			token, _ = integration.Config["password"].(string)
+		}
+		if token != "" {
 			vaultClient = vault.NewClient(integration.URL, token)
 			log.Printf("[Integration] Vault client initialized: %s", integration.URL)
+		} else {
+			log.Printf("[Integration] Vault integration found but no token configured")
 		}
 	}
 	log.Printf("[Integration] Vault client status: %v", vaultClient != nil)

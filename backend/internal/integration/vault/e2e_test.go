@@ -38,7 +38,12 @@ func TestE2E_WriteThenListGet(t *testing.T) {
 		}
 	})
 	mux.HandleFunc("/v1/secret/metadata/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Vault-Method") != "LIST" && r.Header.Get("X-Vault-List") != "true" {
+		if r.Method != "LIST" {
+			w.WriteHeader(405)
+			w.Write([]byte(`{"errors":["1 error during listing: invalid operation"]}`))
+			return
+		}
+		if false {
 			w.WriteHeader(405)
 			w.Write([]byte(`{"errors":["method not allowed"]}`))
 			return
