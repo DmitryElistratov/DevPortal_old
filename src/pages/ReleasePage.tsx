@@ -40,6 +40,7 @@ export default function ReleasePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [deployResult, setDeployResult] = useState<string | null>(null);
   const [busy, setBusy] = useState<'deploy' | 'rollback' | 'approve' | null>(null);
   const [security, setSecurity] = useState<any | null>(null);
   const [tests, setTests] = useState<any | null>(null);
@@ -107,10 +108,15 @@ export default function ReleasePage() {
       if (kind === 'deploy') {
         const environment = window.prompt('Deploy to environment (staging / production):', 'staging');
         if (!environment) { setBusy(null); return; }
-        await api.deployRelease(release.id, environment);
+        const res: any = await api.deployRelease(release.id, environment);
+        // GitOps result from backend: stage + ArgoCD sync/health statuses
+        if (res && (res.argo_app || res.message)) {
+          setDeployResult(res.message || `GitOps deploy via ArgoCD app ${res.argo_app}: sync=${res.sync_status} health=${res.health_status}`);
+        }
       } else if (kind === 'rollback') {
-        if (!window.confirm('Roll back this release?')) { setBusy(null); return; }
-        await api.rollbackRelease(release.id);
+        if (!window.confirm('Roll back this release? This triggers an ArgoCD rollback (GitOps), the cluster is never touched directly.')) { setBusy(null); return; }
+        const res: any = await api.rollbackRelease(release.id);
+        if (res && res.message) setDeployResult(res.message);
       } else {
         await api.approveRelease(release.id);
       }

@@ -303,6 +303,63 @@ func (c *Client) UpdateBranch(ctx context.Context, projectID, branchName, commit
 	return nil
 }
 
+// UpdateFile commits a file into the repository through the GitLab API
+// (PUT /repository/files/:file_path). If the file does not exist yet it is
+// created (POST). This is the transport for GitOps desired-state commits:
+// the portal never applies manifests to the cluster directly — it changes
+// git, and ArgoCD reconciles.
+func (c *Client) UpdateFile(ctx context.Context, projectID, filePath, branch, content, commitMessage string) error {
+	escapedPath := url.PathEscape(filePath)
+	body, err := json.Marshal(map[string]string{
+		"branch":         branch,
+		"content":        content,
+		"commit_message": commitMessage,
+	})
+	if err != nil {
+		return err
+	}
+
+	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/repository/files/%s", c.baseURL, projectID, escapedPath)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, apiURL, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("PRIVATE-TOKEN", c.token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
+		return nil
+	}
+	// 404 => file not tracked yet, create it
+	if resp.StatusCode == http.StatusNotFound {
+		createReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		createReq.Header.Set("PRIVATE-TOKEN", c.token)
+		createReq.Header.Set("Content-Type", "application/json")
+		createResp, err := c.httpClient.Do(createReq)
+		if err != nil {
+			return err
+		}
+		defer createResp.Body.Close()
+		if createResp.StatusCode == http.StatusOK || createResp.StatusCode == http.StatusCreated {
+			return nil
+		}
+		respBody, _ := io.ReadAll(createResp.Body)
+		return fmt.Errorf("gitlab create file error: %d - %s", createResp.StatusCode, string(respBody))
+	}
+
+	respBody, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("gitlab update file error: %d - %s", resp.StatusCode, string(respBody))
+}
+
 // ---------- CI/CD pipelines & Merge Requests (TestOps) ----------
 
 // Pipeline — сжатое представление GitLab CI pipeline.

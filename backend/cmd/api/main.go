@@ -144,6 +144,7 @@ func main() {
 	authService := service.NewAuthService(userRepo, permissionRepo, cfg.JWTSecret)
 	serviceMgmtService := service.NewServiceManagementService(serviceRepo, auditRepo)
 	releaseService := service.NewReleaseService(releaseRepo, auditRepo)
+	deployService := service.NewDeployService(releaseRepo, serviceRepo, activeVersionRepo, integrationRepo, auditRepo, argocdClient, gitlabClient)
 	activeVersionService := service.NewActiveVersionService(activeVersionRepo, auditRepo, argocdClient, gitlabClient)
 	canaryService := service.NewCanaryService(canaryRepo, auditRepo, releaseRepo, serviceRepo, activeVersionRepo, integrationRepo, argocdClient, gitlabClient)
 	jiraService := service.NewJiraService(releaseRepo, auditRepo, jiraClient)
@@ -157,7 +158,7 @@ func main() {
 	testOpsRepo := repository.NewTestOpsRepository(db)
 	authHandler := handler.NewAuthHandler(authService)
 	serviceHandler := handler.NewServiceHandler(serviceMgmtService)
-	releaseHandler := handler.NewReleaseHandler(releaseService)
+	releaseHandler := handler.NewReleaseHandler(releaseService).WithDeployService(deployService)
 	auditHandler := handler.NewAuditHandler(auditRepo)
 	integrationHandler := handler.NewIntegrationHandler(
 		integrationRepo, gitlabClient,
