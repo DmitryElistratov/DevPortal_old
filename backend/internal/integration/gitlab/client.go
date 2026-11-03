@@ -55,6 +55,89 @@ type Project struct {
 	HTTPURLToRepo     string `json:"http_url_to_repo"`
 }
 
+// ProjectID exposes the numeric GitLab project id for member/permission lookups.
+func (p Project) ProjectID() string { return fmt.Sprintf("%d", p.ID) }
+
+// GitLabMember represents a project member with their access level.
+type GitLabMember struct {
+	ID          int    `json:"id"`
+	Username    string `json:"username"`
+	Name        string `json:"name"`
+	Email       string `json:"email"`
+	State       string `json:"state"`
+	AccessLevel int    `json:"access_level"`
+}
+
+// ListProjectMembers returns all members of a project, including members
+// inherited from ancestor group shares (GitLab API: GET /projects/:id/members/all).
+func (c *Client) ListProjectMembers(ctx context.Context, projectID string) ([]GitLabMember, error) {
+	var members []GitLabMember
+	for page := 1; ; page++ {
+		url := fmt.Sprintf("%s/api/v4/projects/%s/members/all?per_page=100&page=%d", c.baseURL, projectID, page)
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("PRIVATE-TOKEN", c.token)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+
+		// Some self-managed instances may not expose /members/all — fall back to /members.
+		if resp.StatusCode == http.StatusNotFound && page == 1 {
+			resp.Body.Close()
+			url = fmt.Sprintf("%s/api/v4/projects/%s/members?per_page=100", c.baseURL, projectID)
+			req, err = http.NewRequestWithContext(ctx, "GET", url, nil)
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("PRIVATE-TOKEN", c.token)
+			resp, err = c.httpClient.Do(req)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("gitlab members API error: %d - %s", resp.StatusCode, string(body))
+		}
+
+		var batch []GitLabMember
+		decodeErr := json.NewDecoder(resp.Body).Decode(&batch)
+		resp.Body.Close()
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		members = append(members, batch...)
+		if len(batch) < 100 {
+			break
+		}
+	}
+	return members, nil
+}
+
+// AccessLevelToRole maps a GitLab numeric access level to the portal role model.
+func AccessLevelToRole(level int) string {
+	switch {
+	case level >= 50: // Owner
+		return "admin"
+	case level >= 40: // Maintainer
+		return "maintainer"
+	case level >= 30: // Developer
+		return "developer"
+	case level >= 20: // Reporter
+		return "reporter"
+	case level >= 10: // Guest
+		return "guest"
+	default:
+		return ""
+	}
+}
+
 type Branch struct {
 	Name   string `json:"name"`
 	Commit struct {
@@ -187,8 +270,8 @@ func (c *Client) CreateTag(ctx context.Context, projectID, tagName, ref string) 
 // UpdateBranch updates a branch to point to a specific commit
 func (c *Client) UpdateBranch(ctx context.Context, projectID, branchName, commitID string) error {
 	payload := map[string]string{
-		"branch":         branchName,
-		"commit_id":      commitID,
+		"branch":    branchName,
+		"commit_id": commitID,
 	}
 
 	body, err := json.Marshal(payload)

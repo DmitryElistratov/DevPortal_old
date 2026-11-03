@@ -85,6 +85,14 @@ class ApiClient {
     return this.request<any[]>('/users');
   }
 
+  // Публичный (без авторизации) список включённых провайдеров авторизации —
+  // используется страницей логина для кнопок «Войти через GitLab/GitHub/Keycloak».
+  async listAuthProviders() {
+    const response = await fetch(`${API_BASE_URL}/auth-providers`);
+    if (!response.ok) return [];
+    return response.json().catch(() => []);
+  }
+
   async getMe() {
     return this.request<any>('/me');
   }

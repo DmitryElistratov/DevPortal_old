@@ -27,18 +27,36 @@ import (
 type IntegrationHandler struct {
 	repo         *repository.IntegrationRepository
 	serviceRepo  *repository.ServiceRepository
+	userRepo     *repository.UserRepository
+	permRepo     *repository.PermissionRepository
 	gitlabClient *gitlab.Client
 }
 
-func NewIntegrationHandler(repo *repository.IntegrationRepository, gitlabClient *gitlab.Client, serviceRepos ...*repository.ServiceRepository) *IntegrationHandler {
+func NewIntegrationHandler(repo *repository.IntegrationRepository, gitlabClient *gitlab.Client, opts ...func(*IntegrationHandler)) *IntegrationHandler {
 	h := &IntegrationHandler{
 		repo:         repo,
 		gitlabClient: gitlabClient,
 	}
-	if len(serviceRepos) > 0 {
-		h.serviceRepo = serviceRepos[0]
+	for _, opt := range opts {
+		opt(h)
 	}
 	return h
+}
+
+// WithServiceRepo attaches the services repository so Git sync can persist projects.
+func WithServiceRepo(r *repository.ServiceRepository) func(*IntegrationHandler) {
+	return func(h *IntegrationHandler) { h.serviceRepo = r }
+}
+
+// WithUserRepo attaches the users repository so Git sync can import GitLab users.
+func WithUserRepo(r *repository.UserRepository) func(*IntegrationHandler) {
+	return func(h *IntegrationHandler) { h.userRepo = r }
+}
+
+// WithPermRepo attaches the project permissions repository so Git sync can
+// import per-project access levels (rights) from GitLab.
+func WithPermRepo(r *repository.PermissionRepository) func(*IntegrationHandler) {
+	return func(h *IntegrationHandler) { h.permRepo = r }
 }
 
 // syncProjectData is a provider-agnostic representation of a repository/project
@@ -52,14 +70,15 @@ type syncProjectData struct {
 
 // persistSyncedProjects upserts projects fetched from a Git provider into the
 // services table so they become visible on the Services page after sync.
-// Returns the number of successfully saved projects.
-func (h *IntegrationHandler) persistSyncedProjects(projects []syncProjectData) (int, error) {
+// Returns the number of successfully saved projects and their DB ids (index-aligned).
+func (h *IntegrationHandler) persistSyncedProjects(projects []syncProjectData) (int, []string, error) {
 	if h.serviceRepo == nil {
-		return 0, fmt.Errorf("service repository not initialized")
+		return 0, nil, fmt.Errorf("service repository not initialized")
 	}
 	saved := 0
+	ids := make([]string, len(projects))
 	var firstErr error
-	for _, p := range projects {
+	for i, p := range projects {
 		if strings.TrimSpace(p.Name) == "" {
 			continue
 		}
@@ -80,9 +99,129 @@ func (h *IntegrationHandler) persistSyncedProjects(projects []syncProjectData) (
 			}
 			continue
 		}
+		ids[i] = svc.ID
 		saved++
 	}
-	return saved, firstErr
+	return saved, ids, firstErr
+}
+
+// importGitLabUsers creates or updates portal users for every unique GitLab
+// member seen during sync, so the Users settings tab reflects Git accounts.
+// Returns the number of users imported/updated.
+func (h *IntegrationHandler) importGitLabUsers(members []gitlab.GitLabMember) int {
+	if h.userRepo == nil {
+		return 0
+	}
+	imported := 0
+	seen := map[int]bool{}
+	for _, m := range members {
+		if m.ID == 0 || seen[m.ID] || strings.TrimSpace(m.Username) == "" {
+			continue
+		}
+		seen[m.ID] = true
+		externalID := fmt.Sprintf("%d", m.ID)
+		fullName := m.Name
+		if fullName == "" {
+			fullName = m.Username
+		}
+		existing, err := h.userRepo.GetByExternalID("gitlab", externalID)
+		if err == nil && existing != nil {
+			// Refresh profile fields of an already-imported user.
+			existing.FullName = fullName
+			existing.Email = m.Email
+			_ = h.userRepo.Update(existing)
+			imported++
+			continue
+		}
+		blocked := m.State != "active"
+		role := "user"
+		if blocked {
+			// Blocked users are stored with the "blocked" role — it is rendered
+			// in the Users tab and prevents them from gaining portal rights.
+			role = "blocked"
+		}
+		user := &model.User{
+			ID:           generateIntegrationID(),
+			Username:     m.Username,
+			Email:        m.Email,
+			FullName:     fullName,
+			Role:         role,
+			AuthProvider: "gitlab",
+			ExternalID:   externalID,
+		}
+		if err := h.userRepo.Create(user); err != nil {
+			// Username collision — try to link the local account to GitLab instead.
+			if local, lerr := h.userRepo.GetByUsername(m.Username); lerr == nil && local != nil {
+				local.AuthProvider = "gitlab"
+				local.ExternalID = externalID
+				if local.Email == "" {
+					local.Email = m.Email
+				}
+				if local.FullName == "" {
+					local.FullName = fullName
+				}
+				_ = h.userRepo.Update(local)
+				imported++
+			}
+			continue
+		}
+		imported++
+	}
+	return imported
+}
+
+// syncGitLabPermissions imports per-project access levels from GitLab into the
+// project_permissions table. serviceIDs is index-aligned with projects; empty
+// entries mean the project was not persisted and its permissions are skipped.
+func (h *IntegrationHandler) syncGitLabPermissions(ctx context.Context, client *gitlab.Client, projects []gitlab.Project, serviceIDs []string, membersCache map[string][]gitlab.GitLabMember) (int, error) {
+	if h.permRepo == nil || h.userRepo == nil {
+		return 0, nil
+	}
+	total := 0
+	var firstErr error
+	for i, p := range projects {
+		if i >= len(serviceIDs) || serviceIDs[i] == "" {
+			continue
+		}
+		pid := p.ProjectID()
+		members, ok := membersCache[pid]
+		if !ok {
+			var err error
+			members, err = client.ListProjectMembers(ctx, pid)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("project %s: %w", p.Name, err)
+				}
+				continue
+			}
+			membersCache[pid] = members
+		}
+		for _, m := range members {
+			role := gitlab.AccessLevelToRole(m.AccessLevel)
+			if role == "" {
+				continue
+			}
+			user, err := h.userRepo.GetByExternalID("gitlab", fmt.Sprintf("%d", m.ID))
+			if err != nil || user == nil {
+				continue
+			}
+			perm := &model.ProjectPermission{
+				ID:        generateIntegrationID(),
+				UserID:    user.ID,
+				ServiceID: serviceIDs[i],
+				Role:      role,
+				GrantedBy: "gitlab-sync",
+			}
+			if err := h.permRepo.Upsert(perm); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			total++
+		}
+	}
+	return total, firstErr
 }
 
 func (h *IntegrationHandler) List(c *gin.Context) {
@@ -502,13 +641,39 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 				RepoURL:     p.HTTPURLToRepo,
 			})
 		}
-		saved, saveErr := h.persistSyncedProjects(synced)
+		saved, serviceIDs, saveErr := h.persistSyncedProjects(synced)
 		if saveErr != nil && saved == 0 {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"success": false,
 				"message": "Failed to save synced projects: " + saveErr.Error(),
 			})
 			return
+		}
+
+		// Import GitLab users and per-project access levels (rights).
+		membersCache := make(map[string][]gitlab.GitLabMember, len(projects))
+		usersImported := 0
+		permsSynced := 0
+		var permWarn string
+		for _, p := range projects {
+			pid := p.ProjectID()
+			members, err := tempClient.ListProjectMembers(ctx, pid)
+			if err != nil {
+				if permWarn == "" {
+					permWarn = "members fetch failed for some projects: " + err.Error()
+				}
+				continue
+			}
+			membersCache[pid] = members
+		}
+		allMembers := make([]gitlab.GitLabMember, 0)
+		for _, ms := range membersCache {
+			allMembers = append(allMembers, ms...)
+		}
+		usersImported = h.importGitLabUsers(allMembers)
+		permsSynced, permErr := h.syncGitLabPermissions(ctx, tempClient, projects, serviceIDs, membersCache)
+		if permErr != nil && permWarn == "" {
+			permWarn = "permissions sync warning: " + permErr.Error()
 		}
 
 		// Update lastSync timestamp
@@ -521,15 +686,21 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{
-			"success":        true,
-			"message":        "Sync completed successfully",
-			"type":           integration.Type,
-			"name":           integration.Name,
-			"synced_at":      integration.UpdatedAt,
-			"projects_count": len(projects),
-			"saved_count":    saved,
-		})
+		resp := gin.H{
+			"success":            true,
+			"message":            "Sync completed successfully",
+			"type":               integration.Type,
+			"name":               integration.Name,
+			"synced_at":          integration.UpdatedAt,
+			"projects_count":     len(projects),
+			"saved_count":        saved,
+			"users_imported":     usersImported,
+			"permissions_synced": permsSynced,
+		}
+		if permWarn != "" {
+			resp["warning"] = permWarn
+		}
+		c.JSON(http.StatusOK, resp)
 		return
 
 	case "github":
@@ -552,7 +723,7 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 				RepoURL: r.HTMLURL,
 			})
 		}
-		saved, saveErr := h.persistSyncedProjects(synced)
+		saved, _, saveErr := h.persistSyncedProjects(synced)
 		if saveErr != nil && saved == 0 {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to save synced repositories: " + saveErr.Error()})
 			return
@@ -594,7 +765,7 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 				RepoURL: r.Links.HTML.Href,
 			})
 		}
-		bbSaved, bbSaveErr := h.persistSyncedProjects(bbSynced)
+		bbSaved, _, bbSaveErr := h.persistSyncedProjects(bbSynced)
 		if bbSaveErr != nil && bbSaved == 0 {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to save synced repositories: " + bbSaveErr.Error()})
 			return
@@ -636,7 +807,7 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 			}
 			jiraSynced = append(jiraSynced, syncProjectData{Name: name})
 		}
-		jiraSaved, jiraSaveErr := h.persistSyncedProjects(jiraSynced)
+		jiraSaved, _, jiraSaveErr := h.persistSyncedProjects(jiraSynced)
 		if jiraSaveErr != nil && jiraSaved == 0 {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to save synced projects: " + jiraSaveErr.Error()})
 			return
@@ -676,7 +847,7 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 				RepoURL: app.Spec.Source.RepoURL,
 			})
 		}
-		argoSaved, argoSaveErr := h.persistSyncedProjects(argoSynced)
+		argoSaved, _, argoSaveErr := h.persistSyncedProjects(argoSynced)
 		if argoSaveErr != nil && argoSaved == 0 {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to save synced applications: " + argoSaveErr.Error()})
 			return
@@ -717,7 +888,7 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 		for _, d := range deployments {
 			k8sSynced = append(k8sSynced, syncProjectData{Name: d.Metadata.Name})
 		}
-		k8sSaved, k8sSaveErr := h.persistSyncedProjects(k8sSynced)
+		k8sSaved, _, k8sSaveErr := h.persistSyncedProjects(k8sSynced)
 		if k8sSaveErr != nil && k8sSaved == 0 {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to save synced deployments: " + k8sSaveErr.Error()})
 			return

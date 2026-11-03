@@ -131,36 +131,36 @@ export default function LoginPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Список включённых провайдеров авторизации берём из настроек портала.
+  // Список включённых провайдеров авторизации берём из публичного эндпоинта
+  // бэкенда (/api/auth-providers) — он доступен без JWT прямо со страницы логина.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const list: any[] = await api.listIntegrations().catch(() => []);
+        const list: any[] = await api.listAuthProviders();
         if (cancelled) return;
         const configs: ProviderButtonConfig[] = [];
         for (const item of list || []) {
-          if (item.type !== 'auth' || !item.enabled) continue;
-          const rawProvider: string = item.config?.provider || 'keycloak';
-          if (rawProvider === 'ldap') continue; // LDAP логины обрабатывает локальная форма
+          const rawProvider: string = item.provider || '';
           if (rawProvider !== 'gitlab' && rawProvider !== 'github' && rawProvider !== 'keycloak') continue;
           const provider: OAuthProvider = rawProvider;
           const baseUrl = (item.url || '').replace(/\/+$/, '');
           let authUrl = '';
           let tokenUrl = '';
           if (provider === 'gitlab') {
+            if (!baseUrl) continue;
             authUrl = `${baseUrl}/oauth/authorize`;
             tokenUrl = `${baseUrl}/oauth/token`;
           } else if (provider === 'github') {
             authUrl = `${baseUrl || 'https://github.com'}/login/oauth/authorize`;
             tokenUrl = `${baseUrl || 'https://github.com'}/login/oauth/access_token`;
           } else if (provider === 'keycloak') {
-            const realm = item.config?.realm || '';
+            const realm = item.realm || '';
             const root = baseUrl.includes('/realms/') ? baseUrl : `${baseUrl}/realms/${realm}`;
             authUrl = `${root}/protocol/openid-connect/auth`;
             tokenUrl = `${root}/protocol/openid-connect/token`;
           }
-          if (!authUrl || !item.config?.clientId) continue;
+          if (!authUrl || !item.clientId) continue;
           configs.push({
             provider,
             label: item.name || PROVIDER_LABELS[provider],
@@ -168,7 +168,7 @@ export default function LoginPage() {
             tokenUrl,
             profileUrl: baseUrl,
             scope: provider === 'gitlab' ? 'read_user openid' : provider === 'github' ? 'read:user user:email' : 'openid profile email',
-            clientId: item.config.clientId,
+            clientId: item.clientId,
           });
         }
         if (!cancelled) setProviders(configs);
