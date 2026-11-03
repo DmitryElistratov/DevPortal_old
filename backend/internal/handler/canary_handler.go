@@ -120,3 +120,38 @@ func (h *CanaryHandler) List(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, canaries)
 }
+
+// ListAll returns all canary deployments (for the portal-wide Canary page).
+func (h *CanaryHandler) ListAll(c *gin.Context) {
+	canaries, err := h.service.ListAll()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if canaries == nil {
+		canaries = []model.CanaryDeployment{}
+	}
+	c.JSON(http.StatusOK, canaries)
+}
+
+// GetActiveByRelease returns the in-progress canary for a release, or 404.
+func (h *CanaryHandler) GetActiveByRelease(c *gin.Context) {
+	releaseID := c.Param("releaseId")
+	canary, err := h.service.GetActiveByReleaseID(releaseID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no active canary deployment for this release"})
+		return
+	}
+	c.JSON(http.StatusOK, canary)
+}
+
+// Analyze returns live ArgoCD status (sync/health/traffic) for a canary.
+func (h *CanaryHandler) Analyze(c *gin.Context) {
+	id := c.Param("id")
+	result, err := h.service.Analyze(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}

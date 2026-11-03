@@ -18,6 +18,7 @@ import {
   Cloud,
   Terminal,
   Key,
+  Rocket,
 } from 'lucide-react';
 
 const navGroups = [
@@ -27,6 +28,7 @@ const navGroups = [
       { path: '/', label: 'Home', icon: Home },
       { path: '/catalog', label: 'Catalog', icon: Layers },
       { path: '/releases', label: 'Releases', icon: GitBranch },
+      { path: '/canary', label: 'Canary Deployments', icon: Rocket },
       { path: '/deployments', label: 'Deployments', icon: Cloud },
       { path: '/kube-api', label: 'Kubernetes API', icon: Terminal },
     ],

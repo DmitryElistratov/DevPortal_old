@@ -212,3 +212,77 @@ func (r *CanaryRepository) Delete(id string) error {
 	_, err := r.db.Exec(query, id)
 	return err
 }
+
+// GetActiveByReleaseID returns the currently in-progress canary for a release
+// (statuses pending/running/promoting), if any.
+func (r *CanaryRepository) GetActiveByReleaseID(releaseID string) (*model.CanaryDeployment, error) {
+	query := `SELECT
+			id, release_id, service_id, status, percentage,
+			stable_version, canary_version, stable_revision, canary_revision,
+			argo_app, git_tag, started_at, updated_at
+	FROM canary_deployments
+	WHERE release_id = $1 AND status IN ('pending', 'running', 'promoting')
+	ORDER BY started_at DESC LIMIT 1`
+
+	canary := &model.CanaryDeployment{}
+	err := r.db.QueryRow(query, releaseID).Scan(
+		&canary.ID,
+		&canary.ReleaseID,
+		&canary.ServiceID,
+		&canary.Status,
+		&canary.Percentage,
+		&canary.StableVersion,
+		&canary.CanaryVersion,
+		&canary.StableRevision,
+		&canary.CanaryRevision,
+		&canary.ArgoApp,
+		&canary.GitTag,
+		&canary.StartedAt,
+		&canary.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return canary, nil
+}
+
+// ListAll returns all canary deployments ordered by start time (newest first).
+func (r *CanaryRepository) ListAll() ([]model.CanaryDeployment, error) {
+	query := `SELECT
+			id, release_id, service_id, status, percentage,
+			stable_version, canary_version, stable_revision, canary_revision,
+			argo_app, git_tag, started_at, updated_at
+	FROM canary_deployments
+	ORDER BY started_at DESC`
+
+	rows, err := r.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var canaries []model.CanaryDeployment
+	for rows.Next() {
+		canary := model.CanaryDeployment{}
+		err := rows.Scan(
+			&canary.ID,
+			&canary.ReleaseID,
+			&canary.ServiceID,
+			&canary.Status,
+			&canary.Percentage,
+			&canary.StableVersion,
+			&canary.CanaryVersion,
+			&canary.StableRevision,
+			&canary.CanaryRevision,
+			&canary.ArgoApp,
+			&canary.GitTag,
+			&canary.StartedAt,
+			&canary.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		canaries = append(canaries, canary)
+	}
+	return canaries, nil
+}

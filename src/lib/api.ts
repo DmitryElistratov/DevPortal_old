@@ -72,6 +72,27 @@ class ApiClient {
     }
   }
 
+  async oauthLogin(data: { provider: string; externalId: string; username?: string; email?: string; fullName?: string }) {
+    const response = await this.request<{ token: string; user: any }>('/auth/oauth', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+    this.setToken(response.token);
+    return response;
+  }
+
+  async listUsers() {
+    return this.request<any[]>('/users');
+  }
+
+  // Публичный (без авторизации) список включённых провайдеров авторизации —
+  // используется страницей логина для кнопок «Войти через GitLab/GitHub/Keycloak».
+  async listAuthProviders() {
+    const response = await fetch(`${API_BASE_URL}/auth-providers`);
+    if (!response.ok) return [];
+    return response.json().catch(() => []);
+  }
+
   async getMe() {
     return this.request<any>('/me');
   }
@@ -269,11 +290,20 @@ class ApiClient {
     });
   }
 
-  async executeCanaryAction(id: string, action: 'promote' | 'rollback', reason: string) {
-    return this.request<any>(`/canary/${id}/action`, {
-      method: 'POST',
-      body: JSON.stringify({ action, reason }),
-    });
+  async promoteCanary(id: string) {
+    return this.request<any>(`/canary/${id}/promote`, { method: 'POST' });
+  }
+
+  async rollbackCanary(id: string) {
+    return this.request<any>(`/canary/${id}/rollback`, { method: 'POST' });
+  }
+
+  async listAllCanaries() {
+    return this.request<any[]>('/canary');
+  }
+
+  async getActiveCanaryByRelease(releaseId: string) {
+    return this.request<any>(`/canary/release/${releaseId}/active`);
   }
 
   async analyzeCanary(id: string) {

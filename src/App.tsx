@@ -65,6 +65,7 @@ function AppRoutes() {
         <Route path="/service/:serviceId/active-versions" element={<ProtectedRoute><Layout><ActiveVersionsPage /></Layout></ProtectedRoute>} />
         <Route path="/release/:releaseId" element={<ProtectedRoute><Layout><ReleasePage /></Layout></ProtectedRoute>} />
         <Route path="/release/:releaseId/canary" element={<ProtectedRoute><Layout><CanaryDeploymentPage /></Layout></ProtectedRoute>} />
+        <Route path="/canary" element={<ProtectedRoute><Layout><CanaryDeploymentPage /></Layout></ProtectedRoute>} />
         <Route path="/releases" element={<ProtectedRoute><Layout><ReleasesPage /></Layout></ProtectedRoute>} />
         <Route path="/audit" element={<ProtectedRoute><Layout><AuditPage /></Layout></ProtectedRoute>} />
         <Route path="/ttm" element={<ProtectedRoute><Layout><TTMPage /></Layout></ProtectedRoute>} />

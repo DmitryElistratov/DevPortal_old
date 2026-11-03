@@ -21,6 +21,39 @@ func (r *ServiceRepository) Create(svc *model.Service) error {
 	return err
 }
 
+// Upsert creates a service if it does not exist yet (matched by repository URL
+// or name) and refreshes its metadata otherwise. Used by Git sync so repeated
+// synchronizations do not fail with unique-constraint violations.
+func (r *ServiceRepository) Upsert(svc *model.Service) error {
+	existing, err := r.getByRepoOrName(svc.Repository, svc.Name)
+	if err == sql.ErrNoRows {
+		return r.Create(svc)
+	}
+	if err != nil {
+		return err
+	}
+	svc.ID = existing.ID
+	query := `UPDATE services SET team = $1, type = $2, lifecycle = $3, description = $4,
+	          language = $5, repository = $6, owner = $7, updated_at = NOW() WHERE id = $8`
+	_, err = r.db.Exec(query, svc.Team, svc.Type, svc.Lifecycle, svc.Description,
+		svc.Language, svc.Repository, svc.Owner, svc.ID)
+	return err
+}
+
+func (r *ServiceRepository) getByRepoOrName(repoURL, name string) (*model.Service, error) {
+	if repoURL != "" {
+		if svc, err := r.GetByRepository(repoURL); err == nil {
+			return svc, nil
+		} else if err != sql.ErrNoRows {
+			return nil, err
+		}
+	}
+	if name != "" {
+		return r.GetByName(name)
+	}
+	return nil, sql.ErrNoRows
+}
+
 func (r *ServiceRepository) GetByID(id string) (*model.Service, error) {
 	svc := &model.Service{}
 	query := `SELECT id, name, team, type, lifecycle, description, language, repository, owner, created_at, updated_at 
