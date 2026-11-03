@@ -148,6 +148,24 @@ func (s *VaultService) ListSecrets(ctx context.Context, path string) ([]string, 
 	return secrets, nil
 }
 
+// ListSecretsExt returns directory entries with full details (data + metadata)
+// for tree-view rendering in a single round trip.
+func (s *VaultService) ListSecretsExt(ctx context.Context, path string) ([]vault.SecretEntryExt, error) {
+	client, err := s.ensureClient()
+	if err != nil {
+		return nil, err
+	}
+
+	log.Printf("[Vault] Listing secrets (ext) at: %s", path)
+	entries, err := client.ListSecretsExt(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list secrets: %w", err)
+	}
+
+	log.Printf("[Vault] Found %d entries (ext)", len(entries))
+	return entries, nil
+}
+
 // Health checks Vault health
 func (s *VaultService) Health(ctx context.Context) (bool, error) {
 	client, err := s.ensureClient()

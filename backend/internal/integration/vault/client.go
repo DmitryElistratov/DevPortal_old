@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -150,6 +151,41 @@ func (c *Client) resolveEngine(ctx context.Context) kvEngine {
 	c.engineChecked = time.Now()
 	log.Printf("[Vault] re-detected KV engine: mount=%q version=v%d", c.engine.Mount, c.engine.Version)
 	return c.engine
+}
+
+// kvMounts returns every KV engine mount reported by sys/mounts. Used to
+// probe alternative mounts when the detected one fails to list a path.
+func (c *Client) kvMounts(ctx context.Context) []kvEngine {
+	statusCode, body, err := c.doJSON(ctx, "GET", fmt.Sprintf("%s/v1/sys/mounts", c.baseURL), nil)
+	if err != nil || statusCode != http.StatusOK {
+		return nil
+	}
+	var result struct {
+		Data struct {
+			Mounts map[string]struct {
+				Type    string `json:"type"`
+				Options struct {
+					Version string `json:"version"`
+				} `json:"options"`
+			} `json:"mounts"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(body, &result) != nil {
+		return nil
+	}
+	out := make([]kvEngine, 0, len(result.Data.Mounts))
+	for path, m := range result.Data.Mounts {
+		if !strings.Contains(m.Type, "kv") {
+			continue
+		}
+		ver := 2
+		if m.Options.Version == "1" {
+			ver = 1
+		}
+		out = append(out, kvEngine{Mount: strings.Trim(path, "/"), Version: ver})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Mount < out[j].Mount })
+	return out
 }
 
 func (c *Client) detectEngine(ctx context.Context) kvEngine {
@@ -517,7 +553,39 @@ func (c *Client) probeWriteable(ctx context.Context, e kvEngine) bool {
 // directory is treated as an empty list rather than an error. If both LIST
 // attempts return 404 for the root listing, we try to auto-enable a KV v2
 // engine once and retry — this fixes the common "fresh dev Vault" case.
+// SecretEntryExt is a single entry returned by ListSecretsExt: either a
+// sub-directory or a leaf secret. Leaf entries carry their data and metadata
+// (KV v2 additionally provides version info), so clients need only one call
+// to render a full tree view without N+1 fetches.
+type SecretEntryExt struct {
+	Name     string                 `json:"name"`
+	Path     string                 `json:"path"`
+	IsDir    bool                   `json:"is_dir"`
+	Data     map[string]interface{} `json:"data,omitempty"`
+	Metadata *SecretMetadata        `json:"metadata,omitempty"`
+}
+
 func (c *Client) ListSecrets(ctx context.Context, path string) ([]string, error) {
+	entries, err := c.ListSecretsExt(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir {
+			keys = append(keys, e.Name+"/")
+		} else {
+			keys = append(keys, e.Name)
+		}
+	}
+	return keys, nil
+}
+
+// ListSecretsExt lists a directory with full entry details, supporting both
+// KV v1 and v2 engines. It probes every known KV mount (not just the
+// auto-detected one) because real deployments often keep secrets under a
+// non-default mount such as "secret-v2" or "kv".
+func (c *Client) ListSecretsExt(ctx context.Context, path string) ([]SecretEntryExt, error) {
 	rel := normalizePath(path)
 	if rel != "" && !strings.HasSuffix(rel, "/") {
 		rel += "/"
@@ -535,71 +603,134 @@ func (c *Client) ListSecrets(ctx context.Context, path string) ([]string, error)
 		return result.Data.Keys, true
 	}
 
-	listOnce := func() (keys []string, found bool, notFound bool) {
-		engine := c.resolveEngine(ctx)
-		// KV v2: LIST /v1/<mount>/metadata/<path>; KV v1: LIST /v1/<mount>/<path>.
-		listURL := fmt.Sprintf("%s/v1/%s/metadata/%s", c.baseURL, engine.Mount, rel)
+	listAt := func(engine kvEngine, p string) ([]string, int, bool) {
+		// KV v2: LIST /v1/<mount>/metadata/<p>; KV v1: LIST /v1/<mount>/<p>.
+		listURL := fmt.Sprintf("%s/v1/%s/metadata/%s", c.baseURL, engine.Mount, p)
 		if engine.Version == 1 {
-			listURL = fmt.Sprintf("%s/v1/%s/%s", c.baseURL, engine.Mount, strings.TrimSuffix(rel, "/"))
+			listURL = fmt.Sprintf("%s/v1/%s/%s", c.baseURL, engine.Mount, strings.TrimSuffix(p, "/"))
 		}
 		status, body, err := c.doJSON(ctx, "LIST", listURL, nil)
 		if err != nil {
 			log.Printf("[Vault] LIST %q transport error: %v", listURL, err)
-			return nil, false, false
+			return nil, 0, false
 		}
 		log.Printf("[Vault] LIST %q -> %d %.200s", listURL, status, string(body))
 		if status == http.StatusOK {
 			if k, ok := extractKeys(body); ok && k != nil {
-				return k, true, false
+				return k, status, true
 			}
 		}
 		// Fallback: the other KV layout on the same mount (covers stale detection).
-		altURL := fmt.Sprintf("%s/v1/%s/%s", c.baseURL, engine.Mount, strings.TrimSuffix(rel, "/"))
+		altURL := fmt.Sprintf("%s/v1/%s/%s", c.baseURL, engine.Mount, strings.TrimSuffix(p, "/"))
 		if engine.Version == 1 {
-			altURL = fmt.Sprintf("%s/v1/%s/metadata/%s", c.baseURL, engine.Mount, rel)
+			altURL = fmt.Sprintf("%s/v1/%s/metadata/%s", c.baseURL, engine.Mount, p)
 		}
 		altStatus, altBody, err := c.doJSON(ctx, "LIST", altURL, nil)
-		if err != nil {
-			log.Printf("[Vault] LIST fallback %q transport error: %v", altURL, err)
-			return nil, false, false
-		}
-		log.Printf("[Vault] LIST fallback %q -> %d %.200s", altURL, altStatus, string(altBody))
-		if altStatus == http.StatusOK {
+		if err == nil && altStatus == http.StatusOK {
 			if k, ok := extractKeys(altBody); ok && k != nil {
-				return k, true, false
+				return k, altStatus, true
 			}
 		}
-		nf := status == http.StatusNotFound && altStatus == http.StatusNotFound
-		return nil, false, nf
+		return nil, status, false
 	}
 
-	keys, found, notFound := listOnce()
-	if found {
-		return keys, nil
+	// Candidate engines: the detected one first, then every other KV mount
+	// reported by sys/mounts, then sensible defaults. This makes listing work
+	// even when autodetection picked the wrong engine or the token cannot read
+	// the detected path but can read another mount.
+	primary := c.resolveEngine(ctx)
+	candidates := []kvEngine{primary}
+	seen := map[string]bool{primary.Mount + "/v" + fmt.Sprint(primary.Version): true}
+	addCandidate := func(e kvEngine) {
+		key := e.Mount + "/v" + fmt.Sprint(e.Version)
+		if !seen[key] && e.Mount != "" {
+			seen[key] = true
+			candidates = append(candidates, e)
+		}
+	}
+	for _, e := range c.kvMounts(ctx) {
+		addCandidate(e)
+	}
+	addCandidate(kvEngine{Mount: "secret", Version: 2})
+	addCandidate(kvEngine{Mount: "secret", Version: 1})
+	addCandidate(kvEngine{Mount: "kv", Version: 2})
+	addCandidate(kvEngine{Mount: "kv-v2", Version: 2})
+
+	anyOther404 := false
+	for _, engine := range candidates {
+		keys, status, found := listAt(engine, rel)
+		if !found {
+			if status != http.StatusNotFound {
+				anyOther404 = true
+			}
+			continue
+		}
+		entries := make([]SecretEntryExt, 0, len(keys))
+		for _, rawKey := range keys {
+			key := strings.TrimSuffix(rawKey, "/")
+			isDir := strings.HasSuffix(rawKey, "/")
+			entryPath := key
+			if rel != "" {
+				entryPath = strings.TrimSuffix(rel, "/") + "/" + key
+			}
+			entry := SecretEntryExt{
+				Name:  key,
+				Path:  fmt.Sprintf("%s/%s", engine.Mount, entryPath),
+				IsDir: isDir,
+			}
+			if !isDir {
+				if sec, err := c.GetSecret(ctx, entryPath); err == nil {
+					entry.Data = sec.Data
+					meta := sec.Metadata
+					entry.Metadata = &meta
+				}
+			}
+			entries = append(entries, entry)
+		}
+		// Classic tree ordering: directories first, alphabetical among them;
+		// leaf secrets keep the order returned by Vault.
+		dirs := make([]SecretEntryExt, 0)
+		leaves := make([]SecretEntryExt, 0)
+		for _, e := range entries {
+			if e.IsDir {
+				dirs = append(dirs, e)
+			} else {
+				leaves = append(leaves, e)
+			}
+		}
+		sort.Slice(dirs, func(i, j int) bool { return dirs[i].Name < dirs[j].Name })
+		entries = append(dirs, leaves...)
+		return entries, nil
 	}
 
-	// Root listing that 404s on both engines usually means no KV mount exists.
-	if notFound && rel == "" && c.ensureKVSecretMount(ctx) {
-		// re-detect with the fresh mount
+	// Root listing that 404s everywhere usually means no KV mount exists yet.
+	if rel == "" && c.ensureKVSecretMount(ctx) {
 		c.engineMu.Lock()
 		c.engineReady = false
 		c.engineMu.Unlock()
-		if keys, found, _ = listOnce(); found {
-			return keys, nil
+		engine := c.resolveEngine(ctx)
+		if keys, _, found := listAt(engine, ""); found {
+			entries := make([]SecretEntryExt, 0, len(keys))
+			for _, rawKey := range keys {
+				key := strings.TrimSuffix(rawKey, "/")
+				entries = append(entries, SecretEntryExt{
+					Name:  key,
+					Path:  fmt.Sprintf("%s/%s", engine.Mount, key),
+					IsDir: strings.HasSuffix(rawKey, "/"),
+				})
+			}
+			return entries, nil
 		}
 	}
 
-	// Still nothing — log what is actually mounted in Vault so the operator can
-	// see whether the engine lives under a non-default mount path.
-	if !found {
-		c.diagnoseMounts(ctx)
-	}
+	// Nothing worked — log what is actually mounted so the operator can see
+	// whether the engine lives under a non-default mount path.
+	c.diagnoseMounts(ctx)
 
-	// Empty/nonexistent directory -> empty list, not an error.
-	// Real Vault answers 404 {"errors":[]} for listing a missing path and also
-	// for a path that holds a leaf secret rather than a directory.
-	if notFound {
-		return []string{}, nil
+	// Empty/nonexistent directory -> empty list, not an error (real Vault
+	// answers 404 {"errors":[]} for missing paths and leaf paths).
+	if !anyOther404 {
+		return []SecretEntryExt{}, nil
 	}
 	return nil, fmt.Errorf("vault LIST failed for path %q", rel)
 }

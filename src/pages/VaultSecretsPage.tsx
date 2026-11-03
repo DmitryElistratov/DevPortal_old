@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { api } from '../lib/api';
 import { useSettings } from '../contexts/SettingsContext';
 import { 
@@ -13,7 +13,14 @@ import {
   EyeOff,
   Copy,
   Check,
-  X
+  X,
+  ChevronRight,
+  ChevronDown,
+  Folder,
+  FolderOpen,
+  Search,
+  ArrowLeft,
+  FileKey
 } from 'lucide-react';
 
 interface VaultSecret {
@@ -27,6 +34,14 @@ interface VaultSecret {
     version: number;
   };
 }
+
+// Format a Vault timestamp safely — KV v1 has no metadata and some responses
+// carry empty strings; render "—" instead of "Invalid Date".
+const fmtDate = (s?: string): string => {
+  if (!s) return '—';
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? '—' : d.toLocaleString();
+};
 
 export default function VaultSecretsPage() {
   const { settings } = useSettings();
@@ -49,6 +64,10 @@ export default function VaultSecretsPage() {
   const [currentPath, setCurrentPath] = useState('secret');
   const [committedPath, setCommittedPath] = useState('secret');
   const debounceRef = useRef<number | null>(null);
+  // Tree view state: expanded folders + lazily-fetched children per directory
+  const [expanded, setExpanded] = useState<Set<string>>(new Set(['secret']));
+  const [treeChildren, setTreeChildren] = useState<Record<string, VaultSecret[]>>({});
+  const [searchQuery, setSearchQuery] = useState('');
 
   const hasVaultIntegration = settings.vaultIntegrations.length > 0 && settings.vaultIntegrations[0].enabled;
 
@@ -69,44 +88,104 @@ export default function VaultSecretsPage() {
 
   const browseTo = (path: string) => {
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
-    setCurrentPath(path);
-    setCommittedPath(path);
+    const clean = path.trim().replace(/\/+$/, '') || 'secret';
+    setCurrentPath(clean);
+    setCommittedPath(clean);
+    // Reveal the target node in the tree
+    setExpanded(prev => {
+      const next = new Set(prev);
+      const parts = clean.split('/');
+      for (let i = 1; i <= parts.length; i++) {
+        next.add(parts.slice(0, i).join('/'));
+      }
+      return next;
+    });
+  };
+
+  const goUpOneLevel = () => {
+    const parts = committedPath.replace(/\/+$/, '').split('/');
+    browseTo(parts.length > 1 ? parts.slice(0, -1).join('/') : 'secret');
+  };
+
+  // Load one directory via the enriched endpoint: name/is_dir/data/metadata all
+  // arrive in a single response — no N+1 GET per leaf anymore.
+  const fetchEntries = async (dir: string): Promise<VaultSecret[]> => {
+    const base = dir.trim().replace(/\/+$/, '') || 'secret';
+    const raw = await api.listVaultEntries(base);
+    const list = Array.isArray(raw) ? raw : [];
+    return list.map((e: any) => {
+      const isDir = !!e.is_dir;
+      const name = e.name || String(e.path || '').replace(/\/+$/, '').split('/').pop() || '';
+      const rel = String(e.path || `${base}/${name}`);
+      return { path: rel, name, isDir, data: e.data ?? {}, metadata: e.metadata } as VaultSecret;
+    });
   };
 
   const loadSecrets = async () => {
     try {
       setLoading(true);
       setError(null);
-      const base = committedPath.trim().replace(/\/+$/, '') || 'secret';
-      // Backend returns a list of key names at the path; fetch full data for each.
-      const keys = await api.listVaultSecrets(base);
-      const entries = await Promise.all(
-        (keys || []).map(async (rawKey: string) => {
-          const isDir = rawKey.endsWith('/');
-          const key = rawKey.replace(/\/+$/, '');
-          const fullPath = base === 'secret' ? key : `${base}/${key}`;
-          if (isDir) {
-            // Sub-directory: show it as a navigable entry without fetching data.
-            return { path: fullPath, name: key, isDir, data: {} } as VaultSecret;
-          }
-          try {
-            const secret = await api.getVaultSecret(fullPath);
-            return {
-              path: fullPath,
-              name: key.split('/').pop() || key,
-              isDir: false,
-              data: secret?.data ?? secret ?? {},
-              metadata: secret?.metadata,
-            } as VaultSecret;
-          } catch {
-            return { path: fullPath, name: key, isDir: false, data: {} } as VaultSecret;
-          }
-        })
-      );
+      const entries = await fetchEntries(committedPath);
       setSecrets(entries);
+      setTreeChildren(prev => ({ ...prev, [committedPath]: entries }));
     } catch (err) {
       console.error('Failed to load Vault secrets:', err);
       setError('Failed to load secrets. Please check Vault integration.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleNode = async (path: string) => {
+    const wasOpen = expanded.has(path);
+    setExpanded(prev => {
+      const next = new Set(prev);
+      if (wasOpen) next.delete(path); else next.add(path);
+      return next;
+    });
+    if (!wasOpen && !treeChildren[path]) {
+      try {
+        const kids = await fetchEntries(path);
+        setTreeChildren(prev => ({ ...prev, [path]: kids }));
+      } catch {
+        setTreeChildren(prev => ({ ...prev, [path]: [] }));
+      }
+    }
+  };
+
+  // Global search: breadth-first walk from the vault root, bounded so we never
+  // hammer a large vault. Results replace the detail list; tree stays intact.
+  const runSearch = async () => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) { loadSecrets(); return; }
+    try {
+      setLoading(true);
+      setError(null);
+      const queue = ['secret'];
+      const visited = new Set<string>();
+      const matches: VaultSecret[] = [];
+      let requests = 0;
+      while (queue.length && requests < 40 && matches.length < 100) {
+        const dir = queue.shift()!;
+        if (visited.has(dir)) continue;
+        visited.add(dir);
+        requests++;
+        let kids: VaultSecret[];
+        try {
+          kids = treeChildren[dir] ?? await fetchEntries(dir);
+        } catch {
+          continue;
+        }
+        setTreeChildren(prev => ({ ...prev, [dir]: kids }));
+        for (const k of kids) {
+          if (k.isDir) queue.push(k.path);
+          else if (k.path.toLowerCase().includes(q)) matches.push(k);
+        }
+      }
+      setSecrets(matches);
+    } catch (err) {
+      console.error('Search failed:', err);
+      setError('Search failed.');
     } finally {
       setLoading(false);
     }
@@ -120,6 +199,7 @@ export default function VaultSecretsPage() {
 
     try {
       await api.createVaultSecret(newSecret.path, newSecret.data);
+      setTreeChildren({}); // drop stale caches so the new secret appears exactly once
       await loadSecrets();
       setShowCreateModal(false);
       setNewSecret({ path: '', data: {} });
@@ -136,6 +216,7 @@ export default function VaultSecretsPage() {
 
     try {
       await api.updateVaultSecret(editingSecret.path, editingSecret.data);
+      setTreeChildren({});
       await loadSecrets();
       setEditingSecret(null);
     } catch (err) {
@@ -149,6 +230,10 @@ export default function VaultSecretsPage() {
 
     try {
       await api.deleteVaultSecret(path);
+      // Remove locally and invalidate every cached directory so a deleted
+      // secret can never be re-served from stale client-side state.
+      setSecrets(prev => prev.filter(s => s.path !== path));
+      setTreeChildren({});
       await loadSecrets();
     } catch (err) {
       console.error('Failed to delete secret:', err);
@@ -196,7 +281,92 @@ export default function VaultSecretsPage() {
     }
   };
 
-  if (loading) {
+  // Breadcrumbs derived from the committed path
+  const breadcrumbs = useMemo(() => {
+    const parts = committedPath.replace(/\/+$/, '').split('/').filter(Boolean);
+    const out: { label: string; path: string }[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      out.push({ label: parts[i], path: parts.slice(0, i + 1).join('/') });
+    }
+    return out;
+  }, [committedPath]);
+
+  const renderTreeNode = (node: VaultSecret, depth: number): JSX.Element => {
+    const isOpen = expanded.has(node.path);
+    const kids = treeChildren[node.path] ?? [];
+    return (
+      <div key={node.path}>
+        <div
+          className="flex items-center gap-1.5 py-1.5 pr-2 rounded hover:bg-gray-50 group"
+          style={{ paddingLeft: `${depth * 18 + 6}px` }}
+        >
+          {node.isDir ? (
+            <>
+              <button
+                onClick={() => toggleNode(node.path)}
+                className="p-0.5 text-gray-400 hover:text-orange-500"
+                title={isOpen ? 'Collapse' : 'Expand'}
+              >
+                {isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+              </button>
+              <button
+                onClick={() => toggleNode(node.path)}
+                className="flex items-center gap-1.5 text-sm font-mono text-gray-800 hover:text-orange-600 truncate"
+                title={node.path}
+              >
+                {isOpen ? <FolderOpen className="w-4 h-4 shrink-0 text-orange-500" /> : <Folder className="w-4 h-4 shrink-0 text-gray-400" />}
+                {node.name}/
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="w-5" />
+              <span
+                className="flex items-center gap-1.5 text-sm font-mono text-gray-700 cursor-pointer hover:text-orange-600 truncate"
+                onClick={() => browseTo(node.path.substring(0, node.path.lastIndexOf('/')) || 'secret')}
+                title={node.path}
+              >
+                <FileKey className="w-4 h-4 shrink-0 text-gray-400" />
+                {node.name}
+              </span>
+              {node.metadata?.version != null && (
+                <span className="text-[10px] text-gray-400 shrink-0">v{node.metadata.version}</span>
+              )}
+              <div className="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                <button
+                  onClick={() => setEditingSecret(node)}
+                  className="p-1 text-gray-400 hover:text-orange-500 hover:bg-orange-50 rounded"
+                  title="Edit"
+                >
+                  <Edit2 className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={() => handleDelete(node.path)}
+                  className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded"
+                  title="Delete"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+        {node.isDir && isOpen && (
+          <div>
+            {kids.length === 0 ? (
+              <div className="text-xs text-gray-400 italic py-1" style={{ paddingLeft: `${(depth + 1) * 18 + 30}px` }}>
+                (empty)
+              </div>
+            ) : (
+              kids.map(kid => renderTreeNode(kid, depth + 1))
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  if (loading && secrets.length === 0) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <Loader2 className="w-8 h-8 animate-spin text-orange-500" />
@@ -242,154 +412,226 @@ export default function VaultSecretsPage() {
       </div>
 
       <div className="max-w-7xl mx-auto px-8 -mt-4 pb-8">
-        {/* Actions */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-6 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">Current Path</label>
-              <div className="flex items-center gap-2">
+        {/* Actions: path navigation + search + create */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-6 flex flex-wrap items-end gap-4">
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Current Path</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={currentPath}
+                onChange={(e) => handlePathChange(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') browseTo(currentPath.trim() || 'secret'); }}
+                className="px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:border-orange-500 w-64 font-mono"
+                placeholder="secret"
+              />
+              <button
+                onClick={goUpOneLevel}
+                className="p-2 text-gray-400 hover:text-orange-500 hover:bg-orange-50 rounded border border-gray-300"
+                title="Go up one level"
+              >
+                <ArrowLeft className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => browseTo(currentPath.trim() || 'secret')}
+                className="px-3 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-700"
+                title="Browse this path"
+              >
+                Browse
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Search secrets</label>
+            <div className="flex items-center gap-2">
+              <div className="relative">
+                <Search className="w-4 h-4 absolute left-2.5 top-2.5 text-gray-400" />
                 <input
                   type="text"
-                  value={currentPath}
-                  onChange={(e) => handlePathChange(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') browseTo(currentPath.trim() || 'secret'); }}
-                  className="px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:border-orange-500"
-                  placeholder="secret"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') runSearch(); }}
+                  className="pl-8 pr-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:border-orange-500 w-56"
+                  placeholder="substring, e.g. prod/db"
                 />
-                <button
-                  onClick={() => browseTo(currentPath.trim() || 'secret')}
-                  className="px-3 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-700"
-                  title="Browse this path"
-                >
-                  Browse
-                </button>
               </div>
+              <button
+                onClick={runSearch}
+                disabled={!searchQuery.trim()}
+                className="px-3 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-700 disabled:opacity-40"
+              >
+                Find
+              </button>
+              {searchQuery && (
+                <button
+                  onClick={() => { setSearchQuery(''); loadSecrets(); }}
+                  className="px-3 py-2 text-sm text-gray-500 hover:text-gray-700"
+                  title="Clear search and return to browsing"
+                >
+                  Clear
+                </button>
+              )}
             </div>
-            <button
-              onClick={loadSecrets}
-              className="p-2 text-gray-400 hover:text-orange-500 hover:bg-orange-50 rounded"
-              title="Refresh"
-            >
-              <RefreshCw className="w-4 h-4" />
-            </button>
           </div>
           <button
+            onClick={() => { setTreeChildren({}); loadSecrets(); }}
+            className="p-2 text-gray-400 hover:text-orange-500 hover:bg-orange-50 rounded"
+            title="Refresh"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+          <button
             onClick={() => setShowCreateModal(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-sm font-medium rounded"
+            className="ml-auto flex items-center gap-2 px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-sm font-medium rounded"
           >
             <Plus className="w-4 h-4" />
             Create Secret
           </button>
         </div>
 
-        {/* Secrets List */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-          <div className="px-6 py-3 border-b border-gray-200">
-            <span className="text-sm text-gray-500">{secrets.length} secrets</span>
-          </div>
-          
-          {secrets.length === 0 ? (
-            <div className="px-6 py-12 text-center">
-              <Key className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-              <p className="text-gray-500 mb-2">No secrets found</p>
-              <p className="text-sm text-gray-400 mb-4">Create your first secret to get started</p>
-              <button
-                onClick={() => setShowCreateModal(true)}
-                className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded text-sm font-medium"
-              >
-                Create Secret
-              </button>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Classic tree view of the vault */}
+          <div className="lg:col-span-1 bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+            <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+              <span className="text-sm font-medium text-gray-700">Secrets Tree</span>
+              <span className="text-xs text-gray-400 font-mono">secret/</span>
             </div>
-          ) : (
-            <div className="divide-y divide-gray-100">
-              {secrets.map((secret) => (
-                <div key={secret.path} className="px-6 py-4 hover:bg-gray-50">
-                  <div className="flex items-start justify-between mb-3">
-                    <div>
-                      <h3
-                        className={`text-sm font-medium text-gray-900 font-mono ${secret.isDir ? 'cursor-pointer hover:text-orange-600' : ''}`}
-                        onClick={() => { if (secret.isDir) browseTo(secret.path); }}
-                        title={secret.isDir ? 'Open directory' : undefined}
-                      >
-                        {secret.name || secret.path}{secret.isDir ? '/' : ''}
-                      </h3>
-                      {!secret.isDir && secret.metadata && (
-                        <div className="flex items-center gap-4 mt-1 text-xs text-gray-500">
-                          <span>Version: {secret.metadata.version}</span>
-                          <span>Updated: {new Date(secret.metadata.updated_time).toLocaleString()}</span>
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {secret.isDir ? (
-                        <button
-                          onClick={() => browseTo(secret.path)}
-                          className="p-1.5 text-gray-400 hover:text-orange-500 hover:bg-orange-50 rounded"
-                          title="Open"
-                        >
-                          <RefreshCw className="w-4 h-4" />
-                        </button>
-                      ) : (
-                        <>
-                          <button
-                            onClick={() => setEditingSecret(secret)}
-                            className="p-1.5 text-gray-400 hover:text-orange-500 hover:bg-orange-50 rounded"
-                            title="Edit"
-                          >
-                            <Edit2 className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => handleDelete(secret.path)}
-                            className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded"
-                            title="Delete"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  
-                  <div className="space-y-2">
-                    {Object.entries(secret.data).map(([key, value]) => (
-                      <div key={key} className="flex items-center gap-2 bg-gray-50 rounded px-3 py-2">
-                        <span className="text-xs font-medium text-gray-700 min-w-[120px]">{key}:</span>
-                        <span className="text-xs text-gray-600 font-mono flex-1">
-                          {visibleSecrets.has(`${secret.path}-${key}`) ? (
-                            String(value)
-                          ) : (
-                            '••••••••••••'
-                          )}
-                        </span>
-                        <button
-                          onClick={() => toggleSecretVisibility(`${secret.path}-${key}`)}
-                          className="p-1 text-gray-400 hover:text-gray-600"
-                          title={visibleSecrets.has(`${secret.path}-${key}`) ? 'Hide' : 'Show'}
-                        >
-                          {visibleSecrets.has(`${secret.path}-${key}`) ? (
-                            <EyeOff className="w-3 h-3" />
-                          ) : (
-                            <Eye className="w-3 h-3" />
-                          )}
-                        </button>
-                        <button
-                          onClick={() => copyToClipboard(String(value), `${secret.path}-${key}`)}
-                          className="p-1 text-gray-400 hover:text-gray-600"
-                          title="Copy"
-                        >
-                          {copiedKey === `${secret.path}-${key}` ? (
-                            <Check className="w-3 h-3 text-green-500" />
-                          ) : (
-                            <Copy className="w-3 h-3" />
-                          )}
-                        </button>
-                      </div>
-                    ))}
-                  </div>
+            <div className="p-2 max-h-[600px] overflow-y-auto">
+              {(treeChildren['secret'] ?? []).length === 0 ? (
+                <div className="px-4 py-8 text-center">
+                  <Key className="w-10 h-10 text-gray-300 mx-auto mb-2" />
+                  <p className="text-sm text-gray-500">No secrets at root</p>
                 </div>
-              ))}
+              ) : (
+                (treeChildren['secret'] ?? []).map(node => renderTreeNode(node, 0))
+              )}
             </div>
-          )}
+          </div>
+
+          {/* Detail panel: contents of the currently browsed path / search results */}
+          <div className="lg:col-span-2 bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+            <div className="px-6 py-3 border-b border-gray-200 flex items-center gap-1 flex-wrap">
+              <nav className="flex items-center gap-1 text-sm font-mono">
+                {breadcrumbs.map((b, i) => (
+                  <span key={b.path} className="flex items-center gap-1">
+                    {i > 0 && <span className="text-gray-300">/</span>}
+                    <button
+                      onClick={() => browseTo(b.path)}
+                      className={i === breadcrumbs.length - 1 ? 'text-orange-600 font-medium' : 'text-gray-500 hover:text-orange-600'}
+                    >
+                      {b.label}
+                    </button>
+                  </span>
+                ))}
+              </nav>
+              <span className="ml-auto text-sm text-gray-500">
+                {searchQuery.trim() ? `${secrets.length} matches` : `${secrets.length} items`}
+              </span>
+            </div>
+
+            {secrets.length === 0 ? (
+              <div className="px-6 py-12 text-center">
+                <Key className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+                <p className="text-gray-500 mb-2">{searchQuery.trim() ? 'No secrets match your search' : 'No secrets found'}</p>
+                <p className="text-sm text-gray-400 mb-4">Create your first secret to get started</p>
+                <button
+                  onClick={() => setShowCreateModal(true)}
+                  className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded text-sm font-medium"
+                >
+                  Create Secret
+                </button>
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-100 max-h-[600px] overflow-y-auto">
+                {secrets.map((secret) => (
+                  <div key={secret.path} className="px-6 py-4 hover:bg-gray-50">
+                    <div className="flex items-start justify-between mb-3">
+                      <div>
+                        <h3
+                          className={`text-sm font-medium text-gray-900 font-mono flex items-center gap-1.5 ${secret.isDir ? 'cursor-pointer hover:text-orange-600' : ''}`}
+                          onClick={() => { if (secret.isDir) browseTo(secret.path); }}
+                          title={secret.isDir ? 'Open directory' : secret.path}
+                        >
+                          {secret.isDir
+                            ? <Folder className="w-4 h-4 text-gray-400" />
+                            : <FileKey className="w-4 h-4 text-gray-400" />}
+                          {secret.name || secret.path}{secret.isDir ? '/' : ''}
+                        </h3>
+                        <div className="text-[11px] text-gray-400 font-mono mt-0.5">{secret.path}</div>
+                        {!secret.isDir && secret.metadata && (
+                          <div className="flex items-center gap-4 mt-1 text-xs text-gray-500">
+                            <span>Version: {secret.metadata.version}</span>
+                            <span>Updated: {fmtDate(secret.metadata.updated_time)}</span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {secret.isDir ? (
+                          <button
+                            onClick={() => browseTo(secret.path)}
+                            className="p-1.5 text-gray-400 hover:text-orange-500 hover:bg-orange-50 rounded"
+                            title="Open"
+                          >
+                            <ChevronRight className="w-4 h-4" />
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => setEditingSecret(secret)}
+                              className="p-1.5 text-gray-400 hover:text-orange-500 hover:bg-orange-50 rounded"
+                              title="Edit"
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleDelete(secret.path)}
+                              className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded"
+                              title="Delete"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      {Object.entries(secret.data).map(([key, value]) => (
+                        <div key={key} className="flex items-center gap-2 bg-gray-50 rounded px-3 py-2">
+                          <span className="text-xs font-medium text-gray-700 min-w-[120px]">{key}:</span>
+                          <span className="text-xs text-gray-600 font-mono flex-1">
+                            {visibleSecrets.has(`${secret.path}-${key}`) ? String(value) : '••••••••••••'}
+                          </span>
+                          <button
+                            onClick={() => toggleSecretVisibility(`${secret.path}-${key}`)}
+                            className="p-1 text-gray-400 hover:text-gray-600"
+                            title={visibleSecrets.has(`${secret.path}-${key}`) ? 'Hide' : 'Show'}
+                          >
+                            {visibleSecrets.has(`${secret.path}-${key}`) ? (
+                              <EyeOff className="w-3 h-3" />
+                            ) : (
+                              <Eye className="w-3 h-3" />
+                            )}
+                          </button>
+                          <button
+                            onClick={() => copyToClipboard(String(value), `${secret.path}-${key}`)}
+                            className="p-1 text-gray-400 hover:text-gray-600"
+                            title="Copy"
+                          >
+                            {copiedKey === `${secret.path}-${key}` ? (
+                              <Check className="w-3 h-3 text-green-500" />
+                            ) : (
+                              <Copy className="w-3 h-3" />
+                            )}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

@@ -381,6 +381,12 @@ class ApiClient {
     return this.request<any[]>(`/vault/secrets?path=${path}`);
   }
 
+  // Enriched listing for the tree view: returns entries with name/path/is_dir/
+  // data/metadata in a single round trip (no N+1 GET per leaf).
+  async listVaultEntries(path: string = 'secret') {
+    return this.request<any[]>(`/vault/secrets?path=${encodeURIComponent(path)}&full=true`);
+  }
+
   async getVaultSecret(path: string) {
     return this.request<any>(`/vault/secrets/${encodeURIComponent(path)}`);
   }

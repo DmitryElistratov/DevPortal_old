@@ -76,6 +76,19 @@ func (h *VaultHandler) DeleteSecret(c *gin.Context) {
 func (h *VaultHandler) ListSecrets(c *gin.Context) {
 	path := c.DefaultQuery("path", "")
 
+	// full=true returns enriched entries (name, path, is_dir, data, metadata)
+	// in one round trip — used by the portal's tree view so it doesn't need an
+	// extra GET per leaf secret. Default keeps the legacy []string contract.
+	if c.Query("full") == "true" {
+		entries, err := h.vaultService.ListSecretsExt(c.Request.Context(), path)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, entries)
+		return
+	}
+
 	secrets, err := h.vaultService.ListSecrets(c.Request.Context(), path)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
