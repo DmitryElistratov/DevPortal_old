@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: portal-frontend
+  namespace: release-portal
+  labels: { app: portal-frontend }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: portal-frontend }
+  strategy:
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  template:
+    metadata:
+      labels: { app: portal-frontend }
+    spec:
+      containers:
+        - name: frontend
+          image: release-portal-frontend:v1.0.0   # overridden by build-release.sh via kustomize
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet: { path: /health, port: 80 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: portal-frontend
+  namespace: release-portal
+spec:
+  selector: { app: portal-frontend }
+  ports:
+    - port: 80
+      targetPort: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: portal-ingress
+  namespace: release-portal
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: portal.local            # change to your real host
+      http:
+        paths:
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service: { name: portal-backend, port: { number: 8080 } }
+          - path: /(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service: { name: portal-frontend, port: { number: 80 } }

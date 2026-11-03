@@ -8,3 +8,4 @@ backend/api
 .vscode/
 .idea/
 .DS_Store
+release/*.tar.gz

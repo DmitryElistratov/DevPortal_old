@@ -1,0 +1,13 @@
+node_modules
+dist
+.git
+scripts/argocd-mock
+release/*.tar.gz
+k8s
+backend/main
+backend/api
+*.log
+.env
+.env.local
+Dockerfile.k8s
+docker-compose.yml

@@ -386,10 +386,38 @@ npm run build
 cd backend && go build -o main cmd/api/main.go
 ```
 
+## ☸️ Деплой в Kubernetes (production release)
+
+Для продакшена используется **только** стек: frontend + backend + PostgreSQL. Никаких моков и dev-заглушек (ArgoCD mock, Keycloak, GitLab CE из `docker-compose.yml` — исключительно для локальной разработки, в релиз не попадают).
+
+### Сборка поименованного релиза в tar-архив
+```bash
+# версия передаётся аргументом или через VERSION; по умолчанию v1.0.0-<gitsha>
+REGISTRY=registry.example.com/team PUSH=true ./release/build-release.sh v1.1.0
+# без реестра (air-gapped / minikube/kind): просто
+./release/build-release.sh v1.1.0
+```
+Результат: `release/release-portal-v<VERSION>.tar.gz`, внутри:
+- `images/backend.tar`, `images/frontend.tar` — готовые production-образы (`docker load`);
+- `k8s/` — манифесты (namespace, postgres StatefulSet+PVC+Secret, backend, frontend+Ingress, kustomization), имена образов уже подставлены сборщиком;
+- `install.sh` — загрузка образов + `kubectl apply -k` + ожидание rollout;
+- `RELEASE_INFO.txt` — версия, git commit, дата сборки, список образов.
+
+### Установка в кластер
+```bash
+tar -xzf release/release-portal-v1.1.0.tar.gz && cd release-portal-v1.1.0
+# 1. отредактируйте секреты: k8s/postgres.yaml (POSTGRES_PASSWORD/DATABASE_URL),
+#    k8s/backend.yaml (JWT_SECRET), хост в Ingress (k8s/frontend.yaml)
+./install.sh          # docker load + kubectl apply -k k8s/
+```
+Без своего образа кластера: `minikube image load images/*.tar` или `kind load image-archive`. Миграции БД применяются автоматически при старте бэкенда (идемпотентно). Фронтенд ходит в API через относительный путь `/api` (nginx проксирует на сервис `portal-backend` в кластере, CORS не нужен); внешние интеграции (GitLab/ArgoCD/Vault/Jira) настраиваются через UI Settings на реальные инстансы.
+
+Прямой деплой манифестов из репозитория (без архива): `kubectl apply -k k8s/` (перед этим замените плейсхолдеры тегов образов `v1.0.0` и секретов).
+
 ## 📊 Мониторинг
 
 - Health check: `GET /health`
-- Backend: `http://localhost:8081/health`
+- Backend: `http://localhost:8081/health` (в кластере — `portal-backend:8080/health`)
 - Frontend: `http://localhost:8080/health`
 
 ## ✅ Чек-лист перед Pull Request / слиянием в main

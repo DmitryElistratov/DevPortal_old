@@ -1,4 +1,4 @@
-const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8081/api';
+const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || '/api';
 
 class ApiClient {
   private token: string | null = null;

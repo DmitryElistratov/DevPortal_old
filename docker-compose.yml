@@ -1,6 +1,12 @@
 version: '3.8'
 
 services:
+  # ============================================================================
+  # NOTE: this compose file is for LOCAL DEVELOPMENT ONLY.
+  # The Kubernetes production release (k8s/ + release/build-release.sh) ships
+  # ONLY backend + frontend + PostgreSQL — no mocks, no dev stubs.
+  # Services marked [DEV-ONLY] below are never included in the release.
+  # ============================================================================
   # PostgreSQL Database
   postgres:
     image: postgres:16-alpine
@@ -50,7 +56,7 @@ services:
       - backend
 
   # Keycloak (Identity Provider)
-  keycloak:
+  keycloak:  # [DEV-ONLY]
     image: quay.io/keycloak/keycloak:23.0
     command: start-dev
     environment:
@@ -67,7 +73,7 @@ services:
         condition: service_healthy
 
   # HashiCorp Vault (Secrets Management)
-  vault:
+  vault:  # [DEV-ONLY local Vault]
     image: hashicorp/vault:1.15
     cap_add:
       - IPC_LOCK
@@ -100,7 +106,7 @@ services:
   # UI/API in Settings integration URL: http://argocd:8080 (from docker network)
   # or http://localhost:8085 from the host. Login: admin / admin
   # ============================================================================
-  argocd:
+  argocd:  # [DEV-ONLY MOCK — remove for prod]
     image: node:20-alpine
     working_dir: /app
     command: ["node", "server.js"]
@@ -117,7 +123,7 @@ services:
       start_period: 10s
 
   # GitLab CE (Source Code Management)
-  gitlab:
+  gitlab:  # [DEV-ONLY]
     image: gitlab/gitlab-ce:16.8.0-ce.0
     hostname: gitlab.local
     environment:
