@@ -145,7 +145,7 @@ func main() {
         serviceHandler := handler.NewServiceHandler(serviceMgmtService)
         releaseHandler := handler.NewReleaseHandler(releaseService)
         auditHandler := handler.NewAuditHandler(auditRepo)
-        integrationHandler := handler.NewIntegrationHandler(integrationRepo, gitlabClient)
+        integrationHandler := handler.NewIntegrationHandler(integrationRepo, gitlabClient, serviceRepo)
         activeVersionHandler := handler.NewActiveVersionHandler(activeVersionService)
         canaryHandler := handler.NewCanaryHandler(canaryService)
         jiraHandler := handler.NewJiraHandler(jiraService)

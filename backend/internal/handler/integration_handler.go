@@ -26,14 +26,63 @@ import (
 
 type IntegrationHandler struct {
 	repo         *repository.IntegrationRepository
+	serviceRepo  *repository.ServiceRepository
 	gitlabClient *gitlab.Client
 }
 
-func NewIntegrationHandler(repo *repository.IntegrationRepository, gitlabClient *gitlab.Client) *IntegrationHandler {
-	return &IntegrationHandler{
+func NewIntegrationHandler(repo *repository.IntegrationRepository, gitlabClient *gitlab.Client, serviceRepos ...*repository.ServiceRepository) *IntegrationHandler {
+	h := &IntegrationHandler{
 		repo:         repo,
 		gitlabClient: gitlabClient,
 	}
+	if len(serviceRepos) > 0 {
+		h.serviceRepo = serviceRepos[0]
+	}
+	return h
+}
+
+// syncProjectData is a provider-agnostic representation of a repository/project
+// returned by Git integrations.
+type syncProjectData struct {
+	Name        string
+	Description string
+	URL         string // web URL of the project
+	RepoURL     string // clone/repository URL stored in services.repository
+}
+
+// persistSyncedProjects upserts projects fetched from a Git provider into the
+// services table so they become visible on the Services page after sync.
+// Returns the number of successfully saved projects.
+func (h *IntegrationHandler) persistSyncedProjects(projects []syncProjectData) (int, error) {
+	if h.serviceRepo == nil {
+		return 0, fmt.Errorf("service repository not initialized")
+	}
+	saved := 0
+	var firstErr error
+	for _, p := range projects {
+		if strings.TrimSpace(p.Name) == "" {
+			continue
+		}
+		svc := &model.Service{
+			ID:          generateIntegrationID(),
+			Name:        p.Name,
+			Type:        "service",
+			Lifecycle:   "production",
+			Description: p.Description,
+			Repository:  p.RepoURL,
+		}
+		if svc.Repository == "" {
+			svc.Repository = p.URL
+		}
+		if err := h.serviceRepo.Upsert(svc); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		saved++
+	}
+	return saved, firstErr
 }
 
 func (h *IntegrationHandler) List(c *gin.Context) {
@@ -442,6 +491,26 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 			return
 		}
 
+		// Persist synced projects into the services table so they show up on
+		// the Services page after synchronization.
+		synced := make([]syncProjectData, 0, len(projects))
+		for _, p := range projects {
+			synced = append(synced, syncProjectData{
+				Name:        p.Name,
+				Description: p.Description,
+				URL:         p.WebURL,
+				RepoURL:     p.HTTPURLToRepo,
+			})
+		}
+		saved, saveErr := h.persistSyncedProjects(synced)
+		if saveErr != nil && saved == 0 {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "Failed to save synced projects: " + saveErr.Error(),
+			})
+			return
+		}
+
 		// Update lastSync timestamp
 		integration.UpdatedAt = time.Now()
 		if err := h.repo.Update(integration); err != nil {
@@ -459,6 +528,7 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 			"name":           integration.Name,
 			"synced_at":      integration.UpdatedAt,
 			"projects_count": len(projects),
+			"saved_count":    saved,
 		})
 		return
 
@@ -474,6 +544,19 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to sync repositories: " + err.Error()})
 			return
 		}
+		synced := make([]syncProjectData, 0, len(repos))
+		for _, r := range repos {
+			synced = append(synced, syncProjectData{
+				Name:    r.Name,
+				URL:     r.HTMLURL,
+				RepoURL: r.HTMLURL,
+			})
+		}
+		saved, saveErr := h.persistSyncedProjects(synced)
+		if saveErr != nil && saved == 0 {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to save synced repositories: " + saveErr.Error()})
+			return
+		}
 		integration.UpdatedAt = time.Now()
 		if err := h.repo.Update(integration); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -486,6 +569,7 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 			"name":           integration.Name,
 			"synced_at":      integration.UpdatedAt,
 			"projects_count": len(repos),
+			"saved_count":    saved,
 		})
 		return
 
@@ -502,6 +586,19 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to sync repositories: " + err.Error()})
 			return
 		}
+		bbSynced := make([]syncProjectData, 0, len(repos))
+		for _, r := range repos {
+			bbSynced = append(bbSynced, syncProjectData{
+				Name:    r.Name,
+				URL:     r.Links.HTML.Href,
+				RepoURL: r.Links.HTML.Href,
+			})
+		}
+		bbSaved, bbSaveErr := h.persistSyncedProjects(bbSynced)
+		if bbSaveErr != nil && bbSaved == 0 {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to save synced repositories: " + bbSaveErr.Error()})
+			return
+		}
 		integration.UpdatedAt = time.Now()
 		if err := h.repo.Update(integration); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -514,6 +611,7 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 			"name":           integration.Name,
 			"synced_at":      integration.UpdatedAt,
 			"projects_count": len(repos),
+			"saved_count":    bbSaved,
 		})
 		return
 

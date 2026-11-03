@@ -49,8 +49,10 @@ func (c *Client) TestConnection(ctx context.Context) error {
 type Project struct {
 	ID                int    `json:"id"`
 	Name              string `json:"name"`
+	Description       string `json:"description"`
 	PathWithNamespace string `json:"path_with_namespace"`
 	WebURL            string `json:"web_url"`
+	HTTPURLToRepo     string `json:"http_url_to_repo"`
 }
 
 type Branch struct {
