@@ -146,6 +146,9 @@ interface SettingsContextType {
   updateVaultIntegration: (id: string, data: Partial<VaultIntegration>) => void;
   addVaultIntegration: (data: Omit<VaultIntegration, 'id'>) => Promise<boolean>;
   deleteVaultIntegration: (id: string) => Promise<void>;
+  addAuthIntegration: (data: Omit<AuthIntegration, 'id'>) => Promise<boolean>;
+  updateAuthIntegration: (id: string, data: Partial<AuthIntegration>) => void;
+  deleteAuthIntegration: (id: string) => Promise<void>;
   updateGeneralSettings: (data: Partial<Settings['general']>) => void;
   testConnection: (type: string, id: string) => Promise<boolean>;
   syncIntegration: (type: string, id: string) => Promise<boolean>;
@@ -227,46 +230,26 @@ function toBackendPayload(frontendType: string, data: any): any {
       return { ...base, config: { username: rest.username || '', password: rest.password || '' } };
     case 'vault':
       return { ...base, config: { token: rest.token || '' } };
-    case 'keycloak':
-    case 'oidc':
+    case 'auth': {
+      const provider = rest.provider || 'keycloak';
+      const defaultUrl =
+        provider === 'github' ? 'https://github.com' :
+        provider === 'gitlab' ? 'https://gitlab.com' : '';
       return {
+        ...base,
+        url: rest.url || defaultUrl,
         type: 'auth',
-        name: rest.name || '',
-        url: rest.url || '',
-        enabled: rest.enabled !== false,
         config: {
-          provider: 'keycloak',
+          provider,
           realm: rest.realm || '',
           clientId: rest.clientId || '',
           clientSecret: rest.clientSecret || '',
-        },
-      };
-    case 'github_oauth':
-    case 'gitlab_oauth':
-      return {
-        type: 'auth',
-        name: rest.name || '',
-        url: rest.url || (rest.provider === 'github' ? 'https://github.com' : 'https://gitlab.com'),
-        enabled: rest.enabled !== false,
-        config: {
-          provider: rest.provider === 'github' ? 'github' : 'gitlab',
-          clientId: rest.clientId || '',
-          clientSecret: rest.clientSecret || '',
-        },
-      };
-    case 'ldap':
-      return {
-        type: 'auth',
-        name: rest.name || '',
-        url: rest.url || '',
-        enabled: rest.enabled !== false,
-        config: {
-          provider: 'ldap',
           bindDn: rest.bindDn || '',
           bindPassword: rest.bindPassword || '',
           baseDn: rest.baseDn || '',
         },
       };
+    }
     case 'notification':
       return {
         ...base,
@@ -577,6 +560,16 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
 
   const deleteVaultIntegration = async (id: string) => apiDelete('vaultIntegrations', id);
 
+  // Auth providers --------------------------------------------------------------
+
+  const addAuthIntegration = async (data: Omit<AuthIntegration, 'id'>) =>
+    apiAdd('auth', 'authIntegrations', data);
+
+  const updateAuthIntegration = (id: string, data: Partial<AuthIntegration>) =>
+    apiUpdate('auth', 'authIntegrations', id, data);
+
+  const deleteAuthIntegration = async (id: string) => apiDelete('authIntegrations', id);
+
   // General -----------------------------------------------------------------------
 
   const updateGeneralSettings = (data: Partial<Settings['general']>) => {
@@ -650,6 +643,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       updateVaultIntegration,
       addVaultIntegration,
       deleteVaultIntegration,
+      addAuthIntegration,
+      updateAuthIntegration,
+      deleteAuthIntegration,
       updateGeneralSettings,
       testConnection,
       syncIntegration,

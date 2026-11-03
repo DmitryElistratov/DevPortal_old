@@ -1,6 +1,7 @@
-import { useState } from 'react';
-import { useSettings } from '../contexts/SettingsContext';
+import { useState, useEffect } from 'react';
+import { useSettings, AuthIntegration } from '../contexts/SettingsContext';
 import { useAuth } from '../contexts/AuthContext';
+import { api } from '../lib/api';
 import {
   GitBranch,
   ExternalLink,
@@ -258,10 +259,32 @@ function GeneralSettings() {
 }
 
 function UsersSettings() {
-  const [users] = useState([
-    { id: '1', username: 'admin', email: 'admin@company.ru', fullName: 'Admin User', role: 'admin', authProvider: 'local', lastLogin: '2024-02-27 14:30' },
-    { id: '2', username: 'developer', email: 'dev@company.ru', fullName: 'Developer User', role: 'developer', authProvider: 'local', lastLogin: '2024-02-27 10:15' },
-  ]);
+  const [users, setUsers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        const list = await api.listUsers();
+        if (!cancelled) setUsers(Array.isArray(list) ? list : []);
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message || 'Не удалось загрузить список пользователей');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const formatLastLogin = (value?: string) => {
+    if (!value) return '—';
+    const d = new Date(value);
+    return isNaN(d.getTime()) ? value : d.toLocaleString('ru-RU');
+  };
 
   return (
     <div className="space-y-6">
@@ -270,7 +293,32 @@ function UsersSettings() {
           <h3 className="text-base font-semibold text-gray-900">Пользователи</h3>
           <p className="text-sm text-gray-500 mt-1">Управление пользователями портала</p>
         </div>
+        <button
+          onClick={async () => {
+            setLoading(true);
+            try {
+              const list = await api.listUsers();
+              setUsers(Array.isArray(list) ? list : []);
+              setError(null);
+            } catch (e: any) {
+              setError(e?.message || 'Не удалось загрузить список пользователей');
+            } finally {
+              setLoading(false);
+            }
+          }}
+          className="flex items-center gap-2 px-3 py-1.5 border border-gray-300 rounded text-sm text-gray-700 hover:bg-gray-50"
+        >
+          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          Обновить
+        </button>
       </div>
+
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-center gap-2 text-sm text-red-700">
+          <AlertCircle className="w-4 h-4 flex-shrink-0" />
+          {error}
+        </div>
+      )}
 
       <div className="border border-gray-200 rounded-lg overflow-hidden">
         <table className="w-full">
@@ -284,24 +332,34 @@ function UsersSettings() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {users.map(user => (
-              <tr key={user.id} className="hover:bg-gray-50">
-                <td className="px-4 py-3">
-                  <div>
-                    <p className="text-sm font-medium text-gray-900">{user.fullName}</p>
-                    <p className="text-xs text-gray-500">@{user.username}</p>
-                  </div>
-                </td>
-                <td className="px-4 py-3 text-sm text-gray-600">{user.email}</td>
-                <td className="px-4 py-3">
-                  <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-700 rounded">{user.role}</span>
-                </td>
-                <td className="px-4 py-3">
-                  <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-700 rounded">{user.authProvider}</span>
-                </td>
-                <td className="px-4 py-3 text-xs text-gray-500">{user.lastLogin}</td>
+            {loading ? (
+              <tr>
+                <td colSpan={5} className="px-4 py-6 text-center text-sm text-gray-500">Загрузка…</td>
               </tr>
-            ))}
+            ) : users.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="px-4 py-6 text-center text-sm text-gray-500">Пользователи не найдены</td>
+              </tr>
+            ) : (
+              users.map(user => (
+                <tr key={user.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3">
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">{user.fullName || user.full_name || user.username}</p>
+                      <p className="text-xs text-gray-500">@{user.username}</p>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-sm text-gray-600">{user.email || '—'}</td>
+                  <td className="px-4 py-3">
+                    <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-700 rounded">{user.role}</span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-700 rounded">{user.authProvider || user.auth_provider || 'local'}</span>
+                  </td>
+                  <td className="px-4 py-3 text-xs text-gray-500">{formatLastLogin(user.lastLogin || user.last_login)}</td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>
@@ -309,53 +367,343 @@ function UsersSettings() {
   );
 }
 
+const AUTH_PROVIDER_META: Record<AuthIntegration['provider'], { title: string; description: string }> = {
+  keycloak: { title: 'Keycloak (OIDC)', description: 'OpenID Connect провайдер' },
+  ldap: { title: 'LDAP', description: 'Корпоративный каталог' },
+  github: { title: 'GitHub OAuth', description: 'Вход через GitHub аккаунт' },
+  gitlab: { title: 'GitLab OAuth', description: 'Вход через GitLab аккаунт' },
+};
+
 function AuthSettings() {
+  const { settings, addAuthIntegration, updateAuthIntegration, deleteAuthIntegration } = useSettings();
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const emptyForm = {
+    name: '',
+    provider: 'keycloak' as AuthIntegration['provider'],
+    url: '',
+    realm: '',
+    clientId: '',
+    clientSecret: '',
+    bindDn: '',
+    bindPassword: '',
+    baseDn: '',
+    enabled: true,
+  };
+  const [form, setForm] = useState({ ...emptyForm });
+
+  const configuredProviders = new Set(
+    settings.authIntegrations.filter(i => i.enabled).map(i => i.provider)
+  );
+
+  const handleAdd = async () => {
+    if (!form.name || !form.provider) return;
+    if (form.provider !== 'ldap' && (!form.url || !form.clientId)) return;
+    if (form.provider === 'ldap' && !form.url) return;
+    setSaving(true);
+    const ok = await addAuthIntegration(form);
+    setSaving(false);
+    if (ok) {
+      setForm({ ...emptyForm });
+      setShowForm(false);
+    }
+  };
+
+  const startEdit = (integration: AuthIntegration) => {
+    setEditingId(integration.id);
+    setForm({
+      name: integration.name,
+      provider: integration.provider,
+      url: integration.url || '',
+      realm: integration.realm || '',
+      clientId: integration.clientId || '',
+      clientSecret: integration.clientSecret || '',
+      bindDn: integration.bindDn || '',
+      bindPassword: integration.bindPassword || '',
+      baseDn: integration.baseDn || '',
+      enabled: integration.enabled,
+    });
+    setShowForm(true);
+  };
+
+  const handleUpdate = async () => {
+    if (!editingId) return;
+    setSaving(true);
+    // Не перезаписываем секрет, если пользователь оставил поле пустым.
+    const data: Partial<AuthIntegration> = { ...form };
+    if (!data.clientSecret) delete (data as any).clientSecret;
+    if (!data.bindPassword) delete (data as any).bindPassword;
+    await updateAuthIntegration(editingId, data);
+    setSaving(false);
+    setEditingId(null);
+    setForm({ ...emptyForm });
+    setShowForm(false);
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm('Удалить интеграцию авторизации?')) return;
+    await deleteAuthIntegration(id);
+  };
+
+  const renderProviderFields = () => (
+    <>
+      {form.provider === 'keycloak' && (
+        <div>
+          <label className="block text-xs font-medium text-gray-700 mb-1">Realm <span className="text-red-500">*</span></label>
+          <input
+            type="text"
+            value={form.realm}
+            onChange={(e) => setForm({ ...form, realm: e.target.value })}
+            placeholder="my-realm"
+            className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+          />
+        </div>
+      )}
+      {(form.provider === 'keycloak' || form.provider === 'github' || form.provider === 'gitlab') && (
+        <>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Client ID <span className="text-red-500">*</span></label>
+            <input
+              type="text"
+              value={form.clientId}
+              onChange={(e) => setForm({ ...form, clientId: e.target.value })}
+              placeholder="release-portal"
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">
+              Client Secret {editingId ? '(пусто — оставить текущий)' : ''}
+            </label>
+            <input
+              type="password"
+              value={form.clientSecret}
+              onChange={(e) => setForm({ ...form, clientSecret: e.target.value })}
+              placeholder="••••••••••••"
+              autoComplete="new-password"
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+            />
+          </div>
+        </>
+      )}
+      {form.provider === 'ldap' && (
+        <>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Bind DN</label>
+            <input
+              type="text"
+              value={form.bindDn}
+              onChange={(e) => setForm({ ...form, bindDn: e.target.value })}
+              placeholder="cn=admin,dc=company,dc=ru"
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">
+              Bind Password {editingId ? '(пусто — оставить текущий)' : ''}
+            </label>
+            <input
+              type="password"
+              value={form.bindPassword}
+              onChange={(e) => setForm({ ...form, bindPassword: e.target.value })}
+              placeholder="••••••••"
+              autoComplete="new-password"
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Base DN</label>
+            <input
+              type="text"
+              value={form.baseDn}
+              onChange={(e) => setForm({ ...form, baseDn: e.target.value })}
+              placeholder="dc=company,dc=ru"
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+            />
+          </div>
+        </>
+      )}
+    </>
+  );
+
   return (
     <div className="space-y-6">
-      <div>
-        <h3 className="text-base font-semibold text-gray-900 mb-2">Провайдеры аутентификации</h3>
-        <p className="text-sm text-gray-500 mb-6">Настройте внешние провайдеры для входа пользователей</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-base font-semibold text-gray-900 mb-1">Провайдеры аутентификации</h3>
+          <p className="text-sm text-gray-500">Настройте внешние провайдеры для входа пользователей</p>
+        </div>
+        <button
+          onClick={() => {
+            setShowForm(!showForm);
+            setEditingId(null);
+            setForm({ ...emptyForm });
+          }}
+          className="flex items-center gap-2 px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-sm font-medium rounded"
+        >
+          <Plus className="w-4 h-4" />
+          Добавить
+        </button>
       </div>
 
-      <div className="border border-gray-200 rounded-lg p-4">
-        <div className="flex items-start justify-between mb-3">
-          <div>
-            <h4 className="text-sm font-medium text-gray-900">Keycloak (OIDC)</h4>
-            <p className="text-xs text-gray-500 mt-1">OpenID Connect провайдер</p>
+      {showForm && (
+        <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+          <h4 className="text-sm font-medium text-gray-900 mb-4">
+            {editingId ? 'Редактирование провайдера' : 'Новый провайдер'}
+          </h4>
+          <div className="space-y-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Название <span className="text-red-500">*</span></label>
+              <input
+                type="text"
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                placeholder="Corporate Keycloak"
+                className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Провайдер</label>
+              <select
+                value={form.provider}
+                onChange={(e) => setForm({ ...form, provider: e.target.value as AuthIntegration['provider'] })}
+                className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+              >
+                <option value="keycloak">Keycloak (OIDC)</option>
+                <option value="gitlab">GitLab OAuth</option>
+                <option value="github">GitHub OAuth</option>
+                <option value="ldap">LDAP</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">URL <span className="text-red-500">*</span></label>
+              <input
+                type="url"
+                value={form.url}
+                onChange={(e) => setForm({ ...form, url: e.target.value })}
+                placeholder={
+                  form.provider === 'keycloak' ? 'https://sso.company.ru/auth/realms/my-realm' :
+                  form.provider === 'ldap' ? 'ldaps://ldap.company.ru:636' :
+                  form.provider === 'github' ? 'https://github.com (или корпоративный GitHub Enterprise)' :
+                  'https://gitlab.com (или корпоративный GitLab)'
+                }
+                className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+              />
+            </div>
+            {renderProviderFields()}
+            <div className="flex items-center gap-2">
+              <input
+                id="auth-enabled"
+                type="checkbox"
+                checked={form.enabled}
+                onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
+                className="rounded"
+              />
+              <label htmlFor="auth-enabled" className="text-xs font-medium text-gray-700">Включён</label>
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button
+                onClick={editingId ? handleUpdate : handleAdd}
+                disabled={saving}
+                className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:bg-gray-400 text-white text-sm font-medium rounded"
+              >
+                {saving ? 'Сохранение…' : 'Сохранить'}
+              </button>
+              <button
+                onClick={() => { setShowForm(false); setEditingId(null); setForm({ ...emptyForm }); }}
+                className="px-4 py-2 border border-gray-300 rounded text-sm text-gray-700 hover:bg-gray-100"
+              >
+                Отмена
+              </button>
+            </div>
           </div>
-          <span className="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded">Доступен</span>
         </div>
+      )}
+
+      {settings.authIntegrations.length === 0 && !showForm && (
+        <div className="border border-dashed border-gray-300 rounded-lg p-6 text-center text-sm text-gray-500">
+          Провайдеры авторизации не настроены. Нажмите «Добавить», чтобы подключить Keycloak, GitLab, GitHub или LDAP.
+        </div>
+      )}
+
+      <div className="space-y-3">
+        {settings.authIntegrations.map(integration => {
+          const meta = AUTH_PROVIDER_META[integration.provider] || { title: integration.provider, description: '' };
+          return (
+            <div key={integration.id} className="border border-gray-200 rounded-lg p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h4 className="text-sm font-medium text-gray-900">
+                    {integration.name} <span className="text-gray-400 font-normal">— {meta.title}</span>
+                  </h4>
+                  <p className="text-xs text-gray-500 mt-1">{meta.description}</p>
+                  <div className="mt-2 space-y-0.5 text-xs text-gray-600">
+                    <p><span className="text-gray-400">URL:</span> {integration.url || '—'}</p>
+                    {integration.provider === 'keycloak' && (
+                      <p><span className="text-gray-400">Realm:</span> {integration.realm || '—'}</p>
+                    )}
+                    {(integration.provider === 'keycloak' || integration.provider === 'github' || integration.provider === 'gitlab') && (
+                      <>
+                        <p><span className="text-gray-400">Client ID:</span> {integration.clientId || '—'}</p>
+                        <p>
+                          <span className="text-gray-400">Client Secret:</span>{' '}
+                          {integration.clientSecret ? '••••••••' : 'не задан'}
+                        </p>
+                      </>
+                    )}
+                    {integration.provider === 'ldap' && (
+                      <>
+                        <p><span className="text-gray-400">Bind DN:</span> {integration.bindDn || '—'}</p>
+                        <p>
+                          <span className="text-gray-400">Bind Password:</span>{' '}
+                          {integration.bindPassword ? '••••••••' : 'не задан'}
+                        </p>
+                        <p><span className="text-gray-400">Base DN:</span> {integration.baseDn || '—'}</p>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="flex flex-col items-end gap-2 flex-shrink-0">
+                  <span
+                    className={`text-xs px-2 py-0.5 rounded ${
+                      integration.enabled
+                        ? 'bg-green-100 text-green-700'
+                        : 'bg-gray-100 text-gray-600'
+                    }`}
+                  >
+                    {integration.enabled ? 'Включён' : 'Выключен'}
+                  </span>
+                  <div className="flex gap-1">
+                    <button
+                      onClick={() => startEdit(integration)}
+                      className="p-1.5 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded"
+                      title="Редактировать"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(integration.id)}
+                      className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded"
+                      title="Удалить"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
-      <div className="border border-gray-200 rounded-lg p-4">
-        <div className="flex items-start justify-between mb-3">
-          <div>
-            <h4 className="text-sm font-medium text-gray-900">LDAP</h4>
-            <p className="text-xs text-gray-500 mt-1">Корпоративный каталог</p>
-          </div>
-          <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded">Не настроен</span>
-        </div>
-      </div>
-
-      <div className="border border-gray-200 rounded-lg p-4">
-        <div className="flex items-start justify-between mb-3">
-          <div>
-            <h4 className="text-sm font-medium text-gray-900">GitHub OAuth</h4>
-            <p className="text-xs text-gray-500 mt-1">Вход через GitHub аккаунт</p>
-          </div>
-          <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded">Не настроен</span>
-        </div>
-      </div>
-
-      <div className="border border-gray-200 rounded-lg p-4">
-        <div className="flex items-start justify-between mb-3">
-          <div>
-            <h4 className="text-sm font-medium text-gray-900">GitLab OAuth</h4>
-            <p className="text-xs text-gray-500 mt-1">Вход через GitLab аккаунт</p>
-          </div>
-          <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded">Не настроен</span>
-        </div>
-      </div>
+      {configuredProviders.size > 0 && (
+        <p className="text-xs text-gray-500">
+          Кнопки входа появятся на странице логина для включённых провайдеров:{' '}
+          {Array.from(configuredProviders).join(', ')}
+        </p>
+      )}
     </div>
   );
 }
