@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -89,7 +90,10 @@ func (c *Client) doJSON(ctx context.Context, method, url string, body io.Reader)
 	}
 	req.Header.Set("X-Vault-Token", c.token)
 	if vaultList {
+		// file/raft storage backends only understand the header-based LIST;
+		// dev-server/Consul accept both. Send headers so every deployment works.
 		req.Header.Set("X-Vault-Method", "LIST")
+		req.Header.Set("X-Vault-List", "true")
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -264,23 +268,25 @@ func (c *Client) ListSecrets(ctx context.Context, path string) ([]string, error)
 		return result.Data.Keys, true
 	}
 
-	// KV v2: LIST /v1/secret/metadata/<path> (doJSON translates LIST into
-	// GET + X-Vault-Method: LIST, which is how Vault's HTTP API implements it)
-	statusCode, body, err := c.doJSON(ctx, "LIST", fmt.Sprintf("%s/v1/secret/metadata/%s", c.baseURL, rel), nil)
+	// KV v2: LIST /v1/secret/metadata/<path>
+	v2Status, v2Body, err := c.doJSON(ctx, "LIST", fmt.Sprintf("%s/v1/secret/metadata/%s", c.baseURL, rel), nil)
 	if err != nil {
 		return nil, err
 	}
-	if statusCode == http.StatusOK {
-		if keys, ok := extractKeys(body); ok && keys != nil {
+	log.Printf("[Vault] LIST metadata %q -> %d %.200s", rel, v2Status, string(v2Body))
+	if v2Status == http.StatusOK {
+		if keys, ok := extractKeys(v2Body); ok && keys != nil {
 			return keys, nil
 		}
 	}
+	statusCode, body := v2Status, v2Body
 
 	// KV v1 fallback: LIST /v1/secret/<path>
 	statusCode, body, err = c.doJSON(ctx, "LIST", fmt.Sprintf("%s/v1/secret/%s", c.baseURL, rel), nil)
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("[Vault] LIST v1 %q -> %d %.200s", rel, statusCode, string(body))
 	if statusCode == http.StatusOK {
 		if keys, ok := extractKeys(body); ok && keys != nil {
 			return keys, nil
