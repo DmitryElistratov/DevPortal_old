@@ -282,11 +282,20 @@ class ApiClient {
     });
   }
 
-  async executeCanaryAction(id: string, action: 'promote' | 'rollback', reason: string) {
-    return this.request<any>(`/canary/${id}/action`, {
-      method: 'POST',
-      body: JSON.stringify({ action, reason }),
-    });
+  async promoteCanary(id: string) {
+    return this.request<any>(`/canary/${id}/promote`, { method: 'POST' });
+  }
+
+  async rollbackCanary(id: string) {
+    return this.request<any>(`/canary/${id}/rollback`, { method: 'POST' });
+  }
+
+  async listAllCanaries() {
+    return this.request<any[]>('/canary');
+  }
+
+  async getActiveCanaryByRelease(releaseId: string) {
+    return this.request<any>(`/canary/release/${releaseId}/active`);
   }
 
   async analyzeCanary(id: string) {

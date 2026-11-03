@@ -192,6 +192,12 @@ export default function ReleasePage() {
             Rollback
           </button>
         )}
+        <Link
+          to={`/release/${release.id}/canary`}
+          className="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg"
+        >
+          Canary Deploy
+        </Link>
         {!canDeploy && !canRollback && !canApprove && (
           <div className="text-sm text-gray-400 italic">No actions available for the current status.</div>
         )}
