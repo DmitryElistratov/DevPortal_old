@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -204,6 +205,7 @@ func main() {
 			Provider string `json:"provider"`
 			URL      string `json:"url"`
 			ClientID string `json:"clientId"`
+			Realm    string `json:"realm"`
 		}
 		out := make([]publicProvider, 0)
 		for _, it := range integrations {
@@ -218,11 +220,13 @@ func main() {
 			if clientID == "" {
 				continue
 			}
+			realm, _ := it.Config["realm"].(string)
 			out = append(out, publicProvider{
 				Name:     it.Name,
 				Provider: provider,
-				URL:      it.URL,
+				URL:      strings.TrimRight(it.URL, "/"),
 				ClientID: clientID,
+				Realm:    realm,
 			})
 		}
 		c.JSON(http.StatusOK, out)

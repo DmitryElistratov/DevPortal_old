@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -17,6 +18,7 @@ type Client struct {
 }
 
 func NewClient(baseURL, token string) *Client {
+	baseURL = strings.TrimRight(baseURL, "/")
 	return &Client{
 		baseURL:    baseURL,
 		token:      token,
@@ -202,8 +204,8 @@ func (c *Client) patchApplication(ctx context.Context, appName string, patches [
 func (c *Client) SetTargetRevision(ctx context.Context, appName, revision string) error {
 	patches := []map[string]interface{}{
 		{
-			"op":   "replace",
-			"path": "/spec/source/targetRevision",
+			"op":    "replace",
+			"path":  "/spec/source/targetRevision",
 			"value": revision,
 		},
 	}

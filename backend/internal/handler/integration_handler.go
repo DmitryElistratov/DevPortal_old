@@ -326,6 +326,28 @@ func requireConfigString(cfg map[string]interface{}, keys ...string) (string, bo
 	return "", false
 }
 
+// normalizeIntegrationURL trims trailing slashes (and surrounding spaces) so
+// stored URLs like "https://gitlab.example.com//" never produce "//api/v4/..."
+// when endpoints are appended by the integration clients.
+func normalizeIntegrationURL(u string) string {
+	return strings.TrimRight(strings.TrimSpace(u), "/")
+}
+
+// githubAPIBase converts a GitHub UI URL (github.com or GitHub Enterprise host)
+// into the REST API base used by the client, tolerating user-entered suffixes.
+func githubAPIBase(uiURL string) string {
+	u := normalizeIntegrationURL(uiURL)
+	if u == "" {
+		return ""
+	}
+	u = strings.TrimPrefix(u, "https://")
+	u = strings.TrimPrefix(u, "http://")
+	if u == "github.com" || u == "www.github.com" {
+		return "https://api.github.com"
+	}
+	return "https://" + u + "/api/v3"
+}
+
 func generateIntegrationID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -342,6 +364,7 @@ func (h *IntegrationHandler) Create(c *gin.Context) {
 	}
 
 	integration.Type = normalizeIntegrationType(integration.Type)
+	integration.URL = normalizeIntegrationURL(integration.URL)
 	if integration.ID == "" {
 		integration.ID = generateIntegrationID()
 	}
@@ -376,6 +399,7 @@ func (h *IntegrationHandler) Update(c *gin.Context) {
 	if integration.URL == "" {
 		integration.URL = existing.URL
 	}
+	integration.URL = normalizeIntegrationURL(integration.URL)
 	if integration.Name == "" {
 		integration.Name = existing.Name
 	}
@@ -472,7 +496,7 @@ func (h *IntegrationHandler) Test(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "GitHub token not configured"})
 			return
 		}
-		client := github.NewClient(token)
+		client := github.NewEnterpriseClient(normalizeIntegrationURL(integration.URL), token)
 		if err := client.TestConnection(ctx); err != nil {
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": "Connection test failed: " + err.Error()})
 			return
@@ -709,7 +733,7 @@ func (h *IntegrationHandler) Sync(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "GitHub token not configured"})
 			return
 		}
-		client := github.NewClient(token)
+		client := github.NewEnterpriseClient(normalizeIntegrationURL(integration.URL), token)
 		repos, err := client.ListRepositories(ctx)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to sync repositories: " + err.Error()})

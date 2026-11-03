@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -16,6 +17,7 @@ type Client struct {
 }
 
 func NewClient(apiServer, token string) *Client {
+	apiServer = strings.TrimRight(apiServer, "/")
 	return &Client{
 		apiServer:  apiServer,
 		token:      token,
@@ -24,7 +26,7 @@ func NewClient(apiServer, token string) *Client {
 }
 
 type Pod struct {
-	Metadata Metadata `json:"metadata"`
+	Metadata Metadata  `json:"metadata"`
 	Status   PodStatus `json:"status"`
 }
 

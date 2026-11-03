@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -19,6 +20,32 @@ type Client struct {
 func NewClient(token string) *Client {
 	return &Client{
 		baseURL:    "https://api.github.com",
+		token:      token,
+		httpClient: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// NewEnterpriseClient creates a client for GitHub Enterprise (or github.com).
+// baseURL is normalized: trailing slashes are stripped and common UI suffixes
+// (/login, /settings/apps, path segments) are removed so the API base never
+// contains double slashes.
+func NewEnterpriseClient(baseURL, token string) *Client {
+	if baseURL == "" {
+		return NewClient(token)
+	}
+	u := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	for _, suffix := range []string{"/login", "/settings", "/dashboard", "/api/v3", "/api"} {
+		u = strings.TrimSuffix(u, suffix)
+	}
+	u = strings.TrimRight(u, "/")
+	if u == "" || u == "https://github.com" || u == "http://github.com" || u == "https://www.github.com" {
+		return NewClient(token)
+	}
+	if !strings.HasPrefix(u, "http") {
+		u = "https://" + u
+	}
+	return &Client{
+		baseURL:    u + "/api/v3",
 		token:      token,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}

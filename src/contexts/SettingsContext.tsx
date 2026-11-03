@@ -194,7 +194,7 @@ function toBackendPayload(frontendType: string, data: any): any {
     id: id || undefined, // backend generates UUID if empty
     type: frontendType,
     name: rest.name || '',
-    url: rest.url || rest.server || '',
+    url: (rest.url || rest.server || '').trim().replace(/\/+$/, ''),
     enabled: rest.enabled !== false,
   };
 
@@ -235,9 +235,12 @@ function toBackendPayload(frontendType: string, data: any): any {
       const defaultUrl =
         provider === 'github' ? 'https://github.com' :
         provider === 'gitlab' ? 'https://gitlab.com' : '';
+      // Normalize: strip extra whitespace and trailing slashes so stored URLs
+      // never contain "//" when endpoints are appended.
+      const rawUrl = (rest.url || defaultUrl).trim().replace(/\/+$/, '');
       return {
         ...base,
-        url: rest.url || defaultUrl,
+        url: rawUrl,
         type: 'auth',
         config: {
           provider,

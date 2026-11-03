@@ -18,6 +18,7 @@ type Client struct {
 }
 
 func NewClient(baseURL, token string) *Client {
+	baseURL = strings.TrimRight(baseURL, "/")
 	return &Client{
 		baseURL:    baseURL,
 		token:      token,
