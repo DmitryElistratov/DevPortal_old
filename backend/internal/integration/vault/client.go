@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -59,118 +60,235 @@ func (c *Client) TestConnection(ctx context.Context) error {
 	return nil
 }
 
-// GetSecret retrieves a secret from Vault
+// normalizePath strips the KV mount prefix so callers can pass either
+// "secret/data/foo" or "foo" and we build correct paths for both KV v1 and v2.
+func normalizePath(path string) string {
+	p := strings.TrimPrefix(path, "/")
+	for _, prefix := range []string{"data/", "metadata/", "delete/"} {
+		p = strings.TrimPrefix(p, prefix)
+	}
+	// strip mount prefix if the whole path starts with the default mount
+	if p == "secret" || strings.HasPrefix(p, "secret/") {
+		p = strings.TrimPrefix(strings.TrimPrefix(p, "secret"), "/")
+	}
+	return p
+}
+
+func (c *Client) doJSON(ctx context.Context, method, url string, body io.Reader) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("X-Vault-Token", c.token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, data, nil
+}
+
+// GetSecret retrieves a secret from Vault, supporting both KV v1 and v2 engines.
 func (c *Client) GetSecret(ctx context.Context, path string) (*Secret, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/v1/secret/data/%s", c.baseURL, path), nil)
+	rel := normalizePath(path)
+
+	// Try KV v2 first: /v1/<mount>/data/<path>
+	statusCode, body, err := c.doJSON(ctx, "GET", fmt.Sprintf("%s/v1/secret/data/%s", c.baseURL, rel), nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-Vault-Token", c.token)
+	if statusCode == http.StatusOK {
+		var result struct {
+			Data Secret `json:"data"`
+		}
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, err
+		}
+		return &result.Data, nil
+	}
 
-	resp, err := c.httpClient.Do(req)
+	// Fallback to KV v1: /v1/<mount>/<path>
+	statusCode, body, err = c.doJSON(ctx, "GET", fmt.Sprintf("%s/v1/secret/%s", c.baseURL, rel), nil)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("vault API error: %d - %s", resp.StatusCode, string(body))
+	if statusCode != http.StatusOK {
+		return nil, fmt.Errorf("vault API error: %d - %s", statusCode, string(body))
 	}
 
-	var result struct {
-		Data Secret `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	// KV v1 returns the key-value map directly under "data"
+	var flat map[string]interface{}
+	if err := json.Unmarshal(body, &struct {
+		Data *map[string]interface{} `json:"data"`
+	}{Data: &flat}); err != nil {
 		return nil, err
 	}
-
-	return &result.Data, nil
+	if flat == nil {
+		return nil, fmt.Errorf("vault returned empty secret data")
+	}
+	return &Secret{Data: flat}, nil
 }
 
-// WriteSecret writes a secret to Vault
+// WriteSecret writes a secret to Vault (KV v2 semantics; falls back to v1 on 404).
 func (c *Client) WriteSecret(ctx context.Context, path string, data map[string]interface{}) error {
-	payload := map[string]interface{}{
-		"data": data,
-	}
+	rel := normalizePath(path)
 
-	body, err := json.Marshal(payload)
+	v2Payload, err := json.Marshal(map[string]interface{}{"data": data})
 	if err != nil {
 		return err
 	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/v1/secret/data/%s", c.baseURL, path), bytes.NewReader(body))
+	statusCode, body, err := c.doJSON(ctx, "POST", fmt.Sprintf("%s/v1/secret/data/%s", c.baseURL, rel), bytes.NewReader(v2Payload))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("X-Vault-Token", c.token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
+	if statusCode == http.StatusOK || statusCode == http.StatusNoContent || statusCode == http.StatusCreated {
+		return nil
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("vault API error: %d - %s", resp.StatusCode, string(respBody))
+	if statusCode == http.StatusNotFound {
+		// Fallback: KV v1 engine stores payload directly under the path
+		v1Payload, err := json.Marshal(data)
+		if err != nil {
+			return err
+		}
+		statusCode, body, err = c.doJSON(ctx, "POST", fmt.Sprintf("%s/v1/secret/%s", c.baseURL, rel), bytes.NewReader(v1Payload))
+		if err != nil {
+			return err
+		}
+		if statusCode == http.StatusOK || statusCode == http.StatusNoContent || statusCode == http.StatusCreated {
+			return nil
+		}
 	}
-
-	return nil
+	return fmt.Errorf("vault API error: %d - %s", statusCode, string(body))
 }
 
-// DeleteSecret deletes a secret from Vault
+// DeleteSecret deletes a secret from Vault (soft-delete metadata in v2, hard delete in v1).
 func (c *Client) DeleteSecret(ctx context.Context, path string) error {
-	req, err := http.NewRequestWithContext(ctx, "DELETE", fmt.Sprintf("%s/v1/secret/data/%s", c.baseURL, path), nil)
+	rel := normalizePath(path)
+
+	statusCode, body, err := c.doJSON(ctx, "DELETE", fmt.Sprintf("%s/v1/secret/data/%s", c.baseURL, rel), nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("X-Vault-Token", c.token)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
+	if statusCode == http.StatusOK || statusCode == http.StatusNoContent {
+		return nil
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("vault API error: %d - %s", resp.StatusCode, string(body))
+	if statusCode == http.StatusNotFound {
+		statusCode, body, err = c.doJSON(ctx, "DELETE", fmt.Sprintf("%s/v1/secret/%s", c.baseURL, rel), nil)
+		if err != nil {
+			return err
+		}
+		if statusCode == http.StatusOK || statusCode == http.StatusNoContent {
+			return nil
+		}
 	}
-
-	return nil
+	return fmt.Errorf("vault API error: %d - %s", statusCode, string(body))
 }
 
-// ListSecrets lists secrets at a path
-func (c *Client) ListSecrets(ctx context.Context, path string) ([]string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/v1/secret/metadata/%s", c.baseURL, path), nil)
+// ListVersions returns KV v2 version metadata for a secret path.
+func (c *Client) ListVersions(ctx context.Context, path string) ([]map[string]interface{}, error) {
+	rel := normalizePath(path)
+	statusCode, body, err := c.doJSON(ctx, "GET", fmt.Sprintf("%s/v1/secret/metadata/%s?list=true", c.baseURL, rel), nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-Vault-Token", c.token)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
+	if statusCode != http.StatusOK {
+		return nil, fmt.Errorf("vault API error: %d - %s", statusCode, string(body))
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("vault API error: %d - %s", resp.StatusCode, string(body))
-	}
-
 	var result struct {
 		Data struct {
-			Keys []string `json:"keys"`
+			Versions []map[string]interface{} `json:"versions"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, err
 	}
+	return result.Data.Versions, nil
+}
 
-	return result.Data.Keys, nil
+// RestoreVersion restores a previously deleted KV v2 version of a secret.
+func (c *Client) RestoreVersion(ctx context.Context, path string, version int) error {
+	rel := normalizePath(path)
+	payload, err := json.Marshal(map[string]interface{}{"versions": []int{version}})
+	if err != nil {
+		return err
+	}
+	statusCode, body, err := c.doJSON(ctx, "POST", fmt.Sprintf("%s/v1/secret/delete/%s", c.baseURL, rel), bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	if statusCode == http.StatusOK || statusCode == http.StatusNoContent {
+		return nil
+	}
+	return fmt.Errorf("vault API error: %d - %s", statusCode, string(body))
+}
+
+// ListSecrets lists secret keys at a path, supporting KV v2 (metadata endpoint)
+// and KV v1 (LIST verb on the path itself). A 404 on an empty/nonexistent
+// directory is treated as an empty list rather than an error.
+func (c *Client) ListSecrets(ctx context.Context, path string) ([]string, error) {
+	rel := normalizePath(path)
+	if rel == "" {
+		rel = ""
+	} else if !strings.HasSuffix(rel, "/") {
+		rel += "/"
+	}
+
+	// KV v2: LIST /v1/secret/metadata/<path>
+	listURL := fmt.Sprintf("%s/v1/secret/metadata/%s", c.baseURL, rel)
+	statusCode, body, err := c.doJSON(ctx, "LIST", listURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	// Some Vault builds reject the LIST verb; retry with X-Vault-Method header
+	if statusCode == http.StatusMethodNotAllowed || statusCode == http.StatusNotFound && len(body) == 0 {
+		req, _ := http.NewRequestWithContext(ctx, "GET", listURL, nil)
+		req.Header.Set("X-Vault-Token", c.token)
+		req.Header.Set("X-Vault-Method", "LIST")
+		resp, err := c.httpClient.Do(req)
+		if err == nil {
+			defer resp.Body.Close()
+			body, _ = io.ReadAll(resp.Body)
+			statusCode = resp.StatusCode
+		}
+	}
+	if statusCode == http.StatusOK {
+		var result struct {
+			Data struct {
+				Keys []string `json:"keys"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, err
+		}
+		return result.Data.Keys, nil
+	}
+
+	// KV v1 fallback: LIST /v1/secret/<path>
+	statusCode, body, err = c.doJSON(ctx, "LIST", fmt.Sprintf("%s/v1/secret/%s", c.baseURL, rel), nil)
+	if err != nil {
+		return nil, err
+	}
+	if statusCode == http.StatusOK {
+		var result struct {
+			Data struct {
+				Keys []string `json:"keys"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, err
+		}
+		return result.Data.Keys, nil
+	}
+
+	// Empty/nonexistent directory -> empty list, not an error
+	if statusCode == http.StatusNotFound {
+		return []string{}, nil
+	}
+	return nil, fmt.Errorf("vault API error: %d - %s", statusCode, string(body))
 }
 
 // Health checks Vault health

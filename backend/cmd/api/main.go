@@ -343,8 +343,11 @@ func main() {
 		vault := api.Group("/vault")
 		{
 			vault.GET("/secrets", vaultHandler.ListSecrets)
-			vault.GET("/secrets/:path", vaultHandler.GetSecret)
 			vault.POST("/secrets/:path", vaultHandler.WriteSecret)
+			vault.PUT("/secrets/:path", vaultHandler.UpdateSecret)
+			vault.GET("/secrets/:path/versions", vaultHandler.ListVersions)
+			vault.POST("/secrets/:path/restore", vaultHandler.RestoreVersion)
+			vault.GET("/secrets/:path", vaultHandler.GetSecret)
 			vault.DELETE("/secrets/:path", vaultHandler.DeleteSecret)
 			vault.GET("/health", vaultHandler.Health)
 		}

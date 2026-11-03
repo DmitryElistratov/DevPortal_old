@@ -48,6 +48,8 @@ export default function VaultSecretsPage() {
   useEffect(() => {
     if (hasVaultIntegration) {
       loadSecrets();
+    } else {
+      setLoading(false);
     }
   }, [currentPath, hasVaultIntegration]);
 
@@ -55,8 +57,27 @@ export default function VaultSecretsPage() {
     try {
       setLoading(true);
       setError(null);
-      const data = await api.listVaultSecrets(currentPath);
-      setSecrets(data || []);
+      // Backend returns a list of key names at the path; fetch full data for each.
+      // Keys ending with "/" are sub-directories and are skipped here.
+      const keys = await api.listVaultSecrets(currentPath);
+      const entries = await Promise.all(
+        (keys || [])
+          .filter((k: string) => !k.endsWith('/'))
+          .map(async (k: string) => {
+            const fullPath = currentPath === 'secret' ? k : `${currentPath}/${k}`;
+            try {
+              const secret = await api.getVaultSecret(fullPath);
+              return {
+                path: fullPath,
+                data: secret?.data ?? secret ?? {},
+                metadata: secret?.metadata,
+              } as VaultSecret;
+            } catch {
+              return { path: fullPath, data: {} } as VaultSecret;
+            }
+          })
+      );
+      setSecrets(entries);
     } catch (err) {
       console.error('Failed to load Vault secrets:', err);
       setError('Failed to load secrets. Please check Vault integration.');

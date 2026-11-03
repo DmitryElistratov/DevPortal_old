@@ -76,6 +76,44 @@ func (h *VaultHandler) ListSecrets(c *gin.Context) {
 	c.JSON(http.StatusOK, secrets)
 }
 
+// UpdateSecret handles PUT /api/vault/secrets/:path (alias of WriteSecret)
+func (h *VaultHandler) UpdateSecret(c *gin.Context) {
+	h.WriteSecret(c)
+}
+
+// ListVersions handles GET /api/vault/secrets/:path/versions
+func (h *VaultHandler) ListVersions(c *gin.Context) {
+	path := c.Param("path")
+
+	versions, err := h.vaultService.ListVersions(c.Request.Context(), path)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"versions": versions})
+}
+
+// RestoreVersion handles POST /api/vault/secrets/:path/restore
+func (h *VaultHandler) RestoreVersion(c *gin.Context) {
+	path := c.Param("path")
+
+	var req struct {
+		Version int `json:"version" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := h.vaultService.RestoreVersion(c.Request.Context(), path, req.Version); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "version restored successfully"})
+}
+
 // Health handles GET /api/vault/health
 func (h *VaultHandler) Health(c *gin.Context) {
 	healthy, err := h.vaultService.Health(c.Request.Context())

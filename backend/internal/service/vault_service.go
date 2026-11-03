@@ -95,3 +95,20 @@ func (s *VaultService) Health(ctx context.Context) (bool, error) {
 	log.Printf("[Vault] Health check: %v", healthy)
 	return healthy, nil
 }
+
+// ListVersions returns version metadata for a secret path (KV v2)
+func (s *VaultService) ListVersions(ctx context.Context, path string) ([]map[string]interface{}, error) {
+	if s.vaultClient == nil {
+		return nil, fmt.Errorf("vault client not configured")
+	}
+	return s.vaultClient.ListVersions(ctx, path)
+}
+
+// RestoreVersion restores a deleted version of a secret (KV v2)
+func (s *VaultService) RestoreVersion(ctx context.Context, path string, version int) error {
+	if s.vaultClient == nil {
+		return fmt.Errorf("vault client not configured")
+	}
+	log.Printf("[Vault] Restoring version %d of secret: %s", version, path)
+	return s.vaultClient.RestoreVersion(ctx, path, version)
+}
