@@ -36,6 +36,11 @@ func main() {
 	}
 	defer db.Close()
 
+	// Apply idempotent schema migrations at startup (CREATE TABLE IF NOT EXISTS ...).
+	// docker-entrypoint-initdb.d only runs on a fresh volume; this keeps existing
+	// databases in sync when new features (e.g. TestOps) are added.
+	repository.ApplyMigrations(db)
+
 	// Repositories
 	userRepo := repository.NewUserRepository(db)
 	serviceRepo := repository.NewServiceRepository(db)

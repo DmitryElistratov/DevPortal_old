@@ -147,3 +147,61 @@ type AuthResponse struct {
 	Token string `json:"token"`
 	User  User   `json:"user"`
 }
+
+// TestRun — результат прогона тестов (TestOps / QA).
+type TestRun struct {
+	ID          string    `json:"id" db:"id"`
+	ServiceID   string    `json:"serviceId" db:"service_id"`
+	ReleaseID   string    `json:"releaseId" db:"release_id"`
+	Environment string    `json:"environment" db:"environment"`
+	Suite       string    `json:"suite" db:"suite"`
+	Status      string    `json:"status" db:"status"`
+	Total       int       `json:"total" db:"total"`
+	Passed      int       `json:"passed" db:"passed"`
+	Failed      int       `json:"failed" db:"failed"`
+	Skipped     int       `json:"skipped" db:"skipped"`
+	DurationMs  int64     `json:"durationMs" db:"duration_ms"`
+	ReportURL   string    `json:"reportUrl" db:"report_url"`
+	PipelineRef string    `json:"pipelineRef" db:"pipeline_ref"`
+	TriggeredBy string    `json:"triggeredBy" db:"triggered_by"`
+	Details     string    `json:"details" db:"details"`
+	CreatedAt   time.Time `json:"createdAt" db:"created_at"`
+	UpdatedAt   time.Time `json:"updatedAt" db:"updated_at"`
+}
+
+// ChecklistStep — шаг чек-листа.
+type ChecklistStep struct {
+	Title string `json:"title"`
+}
+
+// Checklist — шаблон чек-листа для релизов.
+type Checklist struct {
+	ID          string          `json:"id" db:"id"`
+	Name        string          `json:"name" db:"name"`
+	Description string          `json:"description" db:"description"`
+	Steps       []ChecklistStep `json:"steps"`
+	IsDefault   bool            `json:"isDefault" db:"is_default"`
+	CreatedBy   string          `json:"createdBy" db:"created_by"`
+	CreatedAt   time.Time       `json:"createdAt" db:"created_at"`
+	UpdatedAt   time.Time       `json:"updatedAt" db:"updated_at"`
+}
+
+// ChecklistExecutionStep — выполненный шаг конкретного чек-листа на релизе.
+type ChecklistExecutionStep struct {
+	Title     string `json:"title"`
+	Checked   bool   `json:"checked"`
+	CheckedBy string `json:"checkedBy,omitempty"`
+	CheckedAt string `json:"checkedAt,omitempty"`
+}
+
+// ChecklistExecution — экземпляр чек-листа, привязанный к релизу.
+type ChecklistExecution struct {
+	ID          string                   `json:"id" db:"id"`
+	ChecklistID string                   `json:"checklistId" db:"checklist_id"`
+	ReleaseID   string                   `json:"releaseId" db:"release_id"`
+	Steps       []ChecklistExecutionStep `json:"steps"`
+	Completed   bool                     `json:"completed" db:"completed"`
+	CreatedBy   string                   `json:"createdBy" db:"created_by"`
+	CreatedAt   time.Time                `json:"createdAt" db:"created_at"`
+	UpdatedAt   time.Time                `json:"updatedAt" db:"updated_at"`
+}
