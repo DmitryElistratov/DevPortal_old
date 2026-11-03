@@ -168,13 +168,30 @@ class ApiClient {
     return this.request<any[]>(`/audit?limit=${limit}&offset=${offset}`);
   }
 
-  // Git Integration
-  async listGitBranches(projectId: string) {
-    return this.request<any[]>(`/git/branches?projectId=${projectId}`);
+  // Git Integration — реальные ветки/теги из GitLab через интеграцию портала.
+  // project: числовой ID или URL-encoded path (group/project). Если не задан —
+  // берётся из репозитория сервиса serviceId.
+  async listGitBranches(projectId?: string, serviceId?: string) {
+    const params = new URLSearchParams();
+    if (projectId) params.set('project', projectId);
+    if (serviceId) params.set('serviceId', serviceId);
+    return this.request<any[]>(`/ci/branches?${params.toString()}`);
   }
 
-  async listGitTags(projectId: string) {
-    return this.request<any[]>(`/git/tags?projectId=${projectId}`);
+  async listGitTags(projectId?: string, serviceId?: string) {
+    const params = new URLSearchParams();
+    if (projectId) params.set('project', projectId);
+    if (serviceId) params.set('serviceId', serviceId);
+    return this.request<any[]>(`/ci/tags?${params.toString()}`);
+  }
+
+  // Release quality assessment (from GitLab CI: security reports & test results)
+  async getReleaseSecurity(releaseId: string) {
+    return this.request<any>(`/releases/${releaseId}/security`);
+  }
+
+  async getReleaseTests(releaseId: string) {
+    return this.request<any>(`/releases/${releaseId}/tests`);
   }
 
   // Jira Integration
@@ -381,6 +398,12 @@ class ApiClient {
     return this.request<any[]>(`/vault/secrets?path=${path}`);
   }
 
+  // Enriched listing for the tree view: returns entries with name/path/is_dir/
+  // data/metadata in a single round trip (no N+1 GET per leaf).
+  async listVaultEntries(path: string = 'secret') {
+    return this.request<any[]>(`/vault/secrets?path=${encodeURIComponent(path)}&full=true`);
+  }
+
   async getVaultSecret(path: string) {
     return this.request<any>(`/vault/secrets/${encodeURIComponent(path)}`);
   }
@@ -412,6 +435,73 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify({ version }),
     });
+  }
+
+  // ---------- TestOps ----------
+
+  async listTestRuns(params?: { releaseId?: string; serviceId?: string }) {
+    const qs = new URLSearchParams();
+    if (params?.releaseId) qs.set('releaseId', params.releaseId);
+    if (params?.serviceId) qs.set('serviceId', params.serviceId);
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return this.request<any[]>(`/testruns${suffix}`);
+  }
+
+  async createTestRun(data: any) {
+    return this.request<any>('/testruns', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  async deleteTestRun(id: string) {
+    return this.request<any>(`/testruns/${id}`, { method: 'DELETE' });
+  }
+
+  async listChecklists() {
+    return this.request<any[]>('/checklists');
+  }
+
+  async createChecklist(data: any) {
+    return this.request<any>('/checklists', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  async updateChecklist(id: string, data: any) {
+    return this.request<any>(`/checklists/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
+  async deleteChecklist(id: string) {
+    return this.request<any>(`/checklists/${id}`, { method: 'DELETE' });
+  }
+
+  async createChecklistExecution(checklistId: string, releaseId: string) {
+    return this.request<any>('/checklist-executions', {
+      method: 'POST',
+      body: JSON.stringify({ checklistId, releaseId }),
+    });
+  }
+
+  async listChecklistExecutions(releaseId: string) {
+    return this.request<any[]>(`/checklist-executions?releaseId=${encodeURIComponent(releaseId)}`);
+  }
+
+  async updateChecklistExecution(id: string, data: any) {
+    return this.request<any>(`/checklist-executions/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+
+  // ---------- CI/CD proxy ----------
+
+  async listCIPipelines(project: string, ref?: string) {
+    const qs = `project=${encodeURIComponent(project)}${ref ? `&ref=${encodeURIComponent(ref)}` : ''}`;
+    return this.request<any[]>(`/ci/pipelines?${qs}`);
+  }
+
+  async triggerCIPipeline(project: string, ref: string, variables?: Record<string, string>) {
+    return this.request<any>('/ci/pipelines', {
+      method: 'POST',
+      body: JSON.stringify({ project, ref, variables }),
+    });
+  }
+
+  async listCIMergeRequests(project: string, state = 'opened') {
+    return this.request<any[]>(`/ci/merge-requests?project=${encodeURIComponent(project)}&state=${state}`);
   }
 }
 

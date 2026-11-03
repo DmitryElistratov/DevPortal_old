@@ -27,6 +27,7 @@ const ObservabilityPage = lazy(() => import('./pages/ObservabilityPage'));
 const CanaryDeploymentPage = lazy(() => import('./pages/CanaryDeploymentPage'));
 const ActiveVersionsPage = lazy(() => import('./pages/ActiveVersionsPage'));
 const VaultSecretsPage = lazy(() => import('./pages/VaultSecretsPage'));
+const TestsPage = lazy(() => import('./pages/TestsPage'));
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   const { isAuthenticated, loading } = useAuth();
@@ -77,6 +78,7 @@ function AppRoutes() {
         <Route path="/plugins" element={<ProtectedRoute><Layout><PluginsPage /></Layout></ProtectedRoute>} />
         <Route path="/kube-api" element={<ProtectedRoute><Layout><KubeAPIPage /></Layout></ProtectedRoute>} />
         <Route path="/vault/secrets" element={<ProtectedRoute><Layout><VaultSecretsPage /></Layout></ProtectedRoute>} />
+        <Route path="/tests" element={<ProtectedRoute><Layout><TestsPage /></Layout></ProtectedRoute>} />
       </Routes>
     </Suspense>
   );

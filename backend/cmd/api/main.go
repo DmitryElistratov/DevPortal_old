@@ -36,6 +36,11 @@ func main() {
 	}
 	defer db.Close()
 
+	// Apply idempotent schema migrations at startup (CREATE TABLE IF NOT EXISTS ...).
+	// docker-entrypoint-initdb.d only runs on a fresh volume; this keeps existing
+	// databases in sync when new features (e.g. TestOps) are added.
+	repository.ApplyMigrations(db)
+
 	// Repositories
 	userRepo := repository.NewUserRepository(db)
 	serviceRepo := repository.NewServiceRepository(db)
@@ -122,9 +127,15 @@ func main() {
 	// Load Vault integration
 	if vaultIntegrations, err := integrationRepo.GetEnabledByType("vault"); err == nil && len(vaultIntegrations) > 0 {
 		integration := vaultIntegrations[0]
-		if token, ok := integration.Config["token"].(string); ok {
+		token, _ := integration.Config["token"].(string)
+		if token == "" {
+			token, _ = integration.Config["password"].(string)
+		}
+		if token != "" {
 			vaultClient = vault.NewClient(integration.URL, token)
 			log.Printf("[Integration] Vault client initialized: %s", integration.URL)
+		} else {
+			log.Printf("[Integration] Vault integration found but no token configured")
 		}
 	}
 	log.Printf("[Integration] Vault client status: %v", vaultClient != nil)
@@ -133,6 +144,7 @@ func main() {
 	authService := service.NewAuthService(userRepo, permissionRepo, cfg.JWTSecret)
 	serviceMgmtService := service.NewServiceManagementService(serviceRepo, auditRepo)
 	releaseService := service.NewReleaseService(releaseRepo, auditRepo)
+	deployService := service.NewDeployService(releaseRepo, serviceRepo, activeVersionRepo, integrationRepo, auditRepo, argocdClient, gitlabClient)
 	activeVersionService := service.NewActiveVersionService(activeVersionRepo, auditRepo, argocdClient, gitlabClient)
 	canaryService := service.NewCanaryService(canaryRepo, auditRepo, releaseRepo, serviceRepo, activeVersionRepo, integrationRepo, argocdClient, gitlabClient)
 	jiraService := service.NewJiraService(releaseRepo, auditRepo, jiraClient)
@@ -140,11 +152,13 @@ func main() {
 	grafanaService := service.NewGrafanaService(grafanaClient)
 	graylogService := service.NewGraylogService(graylogClient)
 	vaultService := service.NewVaultService(vaultClient)
+	vaultService.WithIntegrationRepo(integrationRepo)
 
 	// Handlers
+	testOpsRepo := repository.NewTestOpsRepository(db)
 	authHandler := handler.NewAuthHandler(authService)
 	serviceHandler := handler.NewServiceHandler(serviceMgmtService)
-	releaseHandler := handler.NewReleaseHandler(releaseService)
+	releaseHandler := handler.NewReleaseHandler(releaseService).WithDeployService(deployService)
 	auditHandler := handler.NewAuditHandler(auditRepo)
 	integrationHandler := handler.NewIntegrationHandler(
 		integrationRepo, gitlabClient,
@@ -159,6 +173,10 @@ func main() {
 	grafanaHandler := handler.NewGrafanaHandler(grafanaService)
 	graylogHandler := handler.NewGraylogHandler(graylogService)
 	vaultHandler := handler.NewVaultHandler(vaultService)
+	testOpsHandler := handler.NewTestOpsHandler(testOpsRepo)
+	ciHandler := handler.NewCIHandler(integrationRepo, serviceRepo, releaseRepo, gitlabClient)
+	argoHandler := handler.NewArgoCDHandler(integrationRepo)
+
 
 	// Router
 	router := gin.Default()
@@ -241,6 +259,7 @@ func main() {
 		{
 			services.GET("", serviceHandler.List)
 			services.GET("/:id", serviceHandler.Get)
+			services.GET("/:id/branches", ciHandler.ListBranchesForService)
 			services.POST("", middleware.RequireRole("admin"), serviceHandler.Create)
 			services.PUT("/:id", middleware.RequireRole("admin"), serviceHandler.Update)
 			services.DELETE("/:id", middleware.RequireRole("admin"), serviceHandler.Delete)
@@ -256,6 +275,11 @@ func main() {
 			releases.POST("/:id/deploy", releaseHandler.Deploy)
 			releases.POST("/:id/rollback", releaseHandler.Rollback)
 			releases.POST("/:id/approve", releaseHandler.Approve)
+			// Quality assessment from GitLab CI (security reports & test results)
+			if ciHandler != nil {
+				releases.GET("/:id/security", ciHandler.ReleaseSecurity)
+				releases.GET("/:id/tests", ciHandler.ReleaseTests)
+			}
 		}
 
 		// Audit
@@ -317,13 +341,22 @@ func main() {
 			jira.POST("/issues/:key/link", jiraHandler.LinkIssueToRelease)
 		}
 
-		// Kubernetes Integration
+		// Kubernetes Integration (raw cluster reads — used for pod logs etc.)
 		k8s := api.Group("/kubernetes")
 		{
 			k8s.GET("/pods", kubernetesHandler.ListPods)
 			k8s.GET("/deployments", kubernetesHandler.ListDeployments)
 			k8s.GET("/services", kubernetesHandler.ListServices)
 			k8s.GET("/pods/:name/logs", kubernetesHandler.GetPodLogs)
+		}
+
+		// ArgoCD Integration — GitOps-native deployment view & control.
+		// This is the canonical source of truth for what is deployed where.
+		argocdGroup := api.Group("/argocd")
+		{
+			argocdGroup.GET("/applications", argoHandler.ListApplications)
+			argocdGroup.GET("/applications/:name", argoHandler.GetApplication)
+			argocdGroup.POST("/applications/:name/sync", argoHandler.SyncApplication)
 		}
 
 		// Grafana Integration
@@ -373,6 +406,38 @@ func main() {
 				vaultHandler.GetSecret(c)
 			})
 			vault.GET("/health", vaultHandler.Health)
+		}
+
+		// TestOps: test runs, QA checklists and executions
+		testruns := api.Group("/testruns")
+		{
+			testruns.GET("", testOpsHandler.ListTestRuns)
+			testruns.POST("", testOpsHandler.CreateTestRun)
+			testruns.GET("/:id", testOpsHandler.GetTestRun)
+			testruns.PUT("/:id", testOpsHandler.UpdateTestRun)
+			testruns.DELETE("/:id", testOpsHandler.DeleteTestRun) // soft-delete only
+		}
+		checklists := api.Group("/checklists")
+		{
+			checklists.GET("", testOpsHandler.ListChecklists)
+			checklists.POST("", testOpsHandler.CreateChecklist)
+			checklists.GET("/:id", testOpsHandler.GetChecklist)
+			checklists.PUT("/:id", testOpsHandler.UpdateChecklist)
+			checklists.DELETE("/:id", testOpsHandler.DeleteChecklist) // soft-delete only
+		}
+		api.POST("/checklist-executions", testOpsHandler.CreateExecution)
+		api.GET("/checklist-executions", testOpsHandler.ListExecutions)
+		api.PUT("/checklist-executions/:id", testOpsHandler.UpdateExecution)
+
+		// CI/CD proxy (GitLab pipelines/jobs/MR via saved integration)
+		ci := api.Group("/ci")
+		{
+			ci.GET("/pipelines", ciHandler.ListPipelines)
+			ci.POST("/pipelines", ciHandler.TriggerPipeline)
+			ci.GET("/pipelines/:pipelineId/jobs", ciHandler.GetPipelineJobs)
+			ci.GET("/merge-requests", ciHandler.ListMergeRequests)
+			ci.GET("/branches", ciHandler.ListBranches)
+			ci.GET("/tags", ciHandler.ListTags)
 		}
 	}
 

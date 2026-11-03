@@ -12,8 +12,8 @@ import (
 )
 
 type JiraService struct {
-	repo      *repository.ReleaseRepository
-	auditRepo *repository.AuditRepository
+	repo       *repository.ReleaseRepository
+	auditRepo  *repository.AuditRepository
 	jiraClient *jira.Client
 }
 

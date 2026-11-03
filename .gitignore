@@ -1,2 +1,10 @@
+node_modules/
 dist/
-go.sum
+backend/api
+*.exe
+*.log
+.env
+.env.local
+.vscode/
+.idea/
+.DS_Store

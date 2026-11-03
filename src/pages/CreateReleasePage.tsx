@@ -13,21 +13,36 @@ export default function CreateReleasePage() {
   const [version, setVersion] = useState('');
   const [branch, setBranch] = useState('');
   const [availableBranches, setAvailableBranches] = useState<string[]>([]);
+  const [branchesLoading, setBranchesLoading] = useState(false);
+  const [branchesError, setBranchesError] = useState('');
   const [creating, setCreating] = useState(false);
 
   const hasGitIntegration = settings.gitIntegrations.length > 0 && settings.gitIntegrations[0].enabled;
 
+  const loadBranches = () => {
+    if (!serviceId || !hasGitIntegration) return;
+    setBranchesLoading(true);
+    setBranchesError('');
+    // Ветки тянутся из GitLab по репозиторию сервиса (GET /api/ci/branches).
+    api.listGitBranches(undefined, serviceId)
+      .then(branches => {
+        const names = branches.map((b: any) => b.name);
+        setAvailableBranches(names);
+        if (names.length > 0 && !branch) {
+          setBranch(names.find((n: string) => n === 'main' || n === 'master') || names[0]);
+        }
+      })
+      .catch((err) => setBranchesError(err instanceof Error ? err.message : 'Failed to load branches'))
+      .finally(() => setBranchesLoading(false));
+  };
+
   useEffect(() => {
     if (serviceId) {
       api.getService(serviceId).then(setService).finally(() => setLoading(false));
-      if (hasGitIntegration) {
-        api.listGitBranches('1').then(branches => {
-          setAvailableBranches(branches.map((b: any) => b.name));
-          if (branches.length > 0) setBranch(branches[0].name);
-        }).catch(() => {});
-      }
+      loadBranches();
     }
-  }, [serviceId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serviceId, hasGitIntegration]);
 
   const handleCreate = async () => {
     if (!version || !branch) return;
@@ -75,23 +90,44 @@ export default function CreateReleasePage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Git Branch *</label>
-              {hasGitIntegration && availableBranches.length > 0 ? (
-                <select
-                  value={branch}
-                  onChange={(e) => setBranch(e.target.value)}
-                  className="w-full border border-gray-300 rounded px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
-                >
-                  <option value="">Select a branch...</option>
-                  {availableBranches.map(b => <option key={b} value={b}>{b}</option>)}
-                </select>
+              {hasGitIntegration && (availableBranches.length > 0 || branchesLoading) ? (
+                <>
+                  <select
+                    value={branch}
+                    onChange={(e) => setBranch(e.target.value)}
+                    disabled={branchesLoading}
+                    className="w-full border border-gray-300 rounded px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+                  >
+                    <option value="">{branchesLoading ? 'Loading branches from GitLab…' : 'Select a branch...'}</option>
+                    {availableBranches.map(b => <option key={b} value={b}>{b}</option>)}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={loadBranches}
+                    disabled={branchesLoading}
+                    className="mt-1 text-xs text-orange-600 hover:underline disabled:opacity-50"
+                  >
+                    ⟳ Обновить список веток из GitLab
+                  </button>
+                </>
               ) : (
-                <input
-                  type="text"
-                  value={branch}
-                  onChange={(e) => setBranch(e.target.value)}
-                  placeholder="release/2.15.0"
-                  className="w-full border border-gray-300 rounded px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
-                />
+                <>
+                  <input
+                    type="text"
+                    value={branch}
+                    onChange={(e) => setBranch(e.target.value)}
+                    placeholder="release/2.15.0"
+                    className="w-full border border-gray-300 rounded px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+                  />
+                  {branchesError && (
+                    <p className="mt-1 text-xs text-red-600 flex items-center gap-1">
+                      <AlertCircle size={12} /> Ветки из GitLab не загрузились: {branchesError}
+                    </p>
+                  )}
+                  {!hasGitIntegration && (
+                    <p className="mt-1 text-xs text-gray-500">Git-интеграция не настроена — введите ветку вручную.</p>
+                  )}
+                </>
               )}
             </div>
             <div className="flex gap-3 pt-4">

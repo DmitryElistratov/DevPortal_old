@@ -21,7 +21,7 @@ func (r *CanaryRepository) Create(canary *model.CanaryDeployment) error {
 		stable_version, canary_version, stable_revision, canary_revision,
 		argo_app, git_tag, started_at, updated_at
 	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
-	
+
 	_, err := r.db.Exec(query,
 		canary.ID,
 		canary.ReleaseID,
@@ -46,7 +46,7 @@ func (r *CanaryRepository) GetByID(id string) (*model.CanaryDeployment, error) {
 		stable_version, canary_version, stable_revision, canary_revision,
 		argo_app, git_tag, started_at, updated_at
 	FROM canary_deployments WHERE id = $1`
-	
+
 	canary := &model.CanaryDeployment{}
 	err := r.db.QueryRow(query, id).Scan(
 		&canary.ID,
@@ -75,7 +75,7 @@ func (r *CanaryRepository) GetByReleaseID(releaseID string) (*model.CanaryDeploy
 		stable_version, canary_version, stable_revision, canary_revision,
 		argo_app, git_tag, started_at, updated_at
 	FROM canary_deployments WHERE release_id = $1 ORDER BY started_at DESC LIMIT 1`
-	
+
 	canary := &model.CanaryDeployment{}
 	err := r.db.QueryRow(query, releaseID).Scan(
 		&canary.ID,
@@ -106,7 +106,7 @@ func (r *CanaryRepository) GetActiveByServiceID(serviceID string) (*model.Canary
 	FROM canary_deployments 
 	WHERE service_id = $1 AND status IN ('pending', 'running', 'promoting')
 	ORDER BY started_at DESC LIMIT 1`
-	
+
 	canary := &model.CanaryDeployment{}
 	err := r.db.QueryRow(query, serviceID).Scan(
 		&canary.ID,
@@ -135,7 +135,7 @@ func (r *CanaryRepository) Update(canary *model.CanaryDeployment) error {
 		percentage = $3,
 		updated_at = $4
 	WHERE id = $1`
-	
+
 	canary.UpdatedAt = time.Now()
 	_, err := r.db.Exec(query,
 		canary.ID,
@@ -151,7 +151,7 @@ func (r *CanaryRepository) UpdateStatus(id string, status string) error {
 		status = $2,
 		updated_at = $3
 	WHERE id = $1`
-	
+
 	_, err := r.db.Exec(query, id, status, time.Now())
 	return err
 }
@@ -161,7 +161,7 @@ func (r *CanaryRepository) UpdatePercentage(id string, percentage int) error {
 		percentage = $2,
 		updated_at = $3
 	WHERE id = $1`
-	
+
 	_, err := r.db.Exec(query, id, percentage, time.Now())
 	return err
 }
@@ -174,13 +174,13 @@ func (r *CanaryRepository) ListByServiceID(serviceID string) ([]model.CanaryDepl
 	FROM canary_deployments 
 	WHERE service_id = $1
 	ORDER BY started_at DESC`
-	
+
 	rows, err := r.db.Query(query, serviceID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	
+
 	var canaries []model.CanaryDeployment
 	for rows.Next() {
 		canary := model.CanaryDeployment{}
