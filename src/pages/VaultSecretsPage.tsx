@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { api } from '../lib/api';
 import { useSettings } from '../contexts/SettingsContext';
 import { 
@@ -18,6 +18,8 @@ import {
 
 interface VaultSecret {
   path: string;
+  name?: string;
+  isDir?: boolean;
   data: Record<string, any>;
   metadata?: {
     created_time: string;
@@ -41,7 +43,12 @@ export default function VaultSecretsPage() {
   const [newValue, setNewValue] = useState('');
   const [visibleSecrets, setVisibleSecrets] = useState<Set<string>>(new Set());
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  // currentPath is what the user types; committedPath is what we actually query.
+  // Splitting them prevents an API request on every keystroke — browsing happens
+  // via the "Browse" button / Enter or after a short idle debounce.
   const [currentPath, setCurrentPath] = useState('secret');
+  const [committedPath, setCommittedPath] = useState('secret');
+  const debounceRef = useRef<number | null>(null);
 
   const hasVaultIntegration = settings.vaultIntegrations.length > 0 && settings.vaultIntegrations[0].enabled;
 
@@ -51,31 +58,50 @@ export default function VaultSecretsPage() {
     } else {
       setLoading(false);
     }
-  }, [currentPath, hasVaultIntegration]);
+  }, [committedPath, hasVaultIntegration]);
+
+  const handlePathChange = (value: string) => {
+    setCurrentPath(value);
+    // Debounced commit: fire the request only after the user stops typing.
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    debounceRef.current = window.setTimeout(() => setCommittedPath(value.trim() || 'secret'), 500);
+  };
+
+  const browseTo = (path: string) => {
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    setCurrentPath(path);
+    setCommittedPath(path);
+  };
 
   const loadSecrets = async () => {
     try {
       setLoading(true);
       setError(null);
+      const base = committedPath.trim().replace(/\/+$/, '') || 'secret';
       // Backend returns a list of key names at the path; fetch full data for each.
-      // Keys ending with "/" are sub-directories and are skipped here.
-      const keys = await api.listVaultSecrets(currentPath);
+      const keys = await api.listVaultSecrets(base);
       const entries = await Promise.all(
-        (keys || [])
-          .filter((k: string) => !k.endsWith('/'))
-          .map(async (k: string) => {
-            const fullPath = currentPath === 'secret' ? k : `${currentPath}/${k}`;
-            try {
-              const secret = await api.getVaultSecret(fullPath);
-              return {
-                path: fullPath,
-                data: secret?.data ?? secret ?? {},
-                metadata: secret?.metadata,
-              } as VaultSecret;
-            } catch {
-              return { path: fullPath, data: {} } as VaultSecret;
-            }
-          })
+        (keys || []).map(async (rawKey: string) => {
+          const isDir = rawKey.endsWith('/');
+          const key = rawKey.replace(/\/+$/, '');
+          const fullPath = base === 'secret' ? key : `${base}/${key}`;
+          if (isDir) {
+            // Sub-directory: show it as a navigable entry without fetching data.
+            return { path: fullPath, name: key, isDir, data: {} } as VaultSecret;
+          }
+          try {
+            const secret = await api.getVaultSecret(fullPath);
+            return {
+              path: fullPath,
+              name: key.split('/').pop() || key,
+              isDir: false,
+              data: secret?.data ?? secret ?? {},
+              metadata: secret?.metadata,
+            } as VaultSecret;
+          } catch {
+            return { path: fullPath, name: key, isDir: false, data: {} } as VaultSecret;
+          }
+        })
       );
       setSecrets(entries);
     } catch (err) {
@@ -221,13 +247,23 @@ export default function VaultSecretsPage() {
           <div className="flex items-center gap-4">
             <div>
               <label className="block text-xs font-medium text-gray-700 mb-1">Current Path</label>
-              <input
-                type="text"
-                value={currentPath}
-                onChange={(e) => setCurrentPath(e.target.value)}
-                className="px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:border-orange-500"
-                placeholder="secret"
-              />
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={currentPath}
+                  onChange={(e) => handlePathChange(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') browseTo(currentPath.trim() || 'secret'); }}
+                  className="px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:border-orange-500"
+                  placeholder="secret"
+                />
+                <button
+                  onClick={() => browseTo(currentPath.trim() || 'secret')}
+                  className="px-3 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50 text-gray-700"
+                  title="Browse this path"
+                >
+                  Browse
+                </button>
+              </div>
             </div>
             <button
               onClick={loadSecrets}
@@ -270,8 +306,14 @@ export default function VaultSecretsPage() {
                 <div key={secret.path} className="px-6 py-4 hover:bg-gray-50">
                   <div className="flex items-start justify-between mb-3">
                     <div>
-                      <h3 className="text-sm font-medium text-gray-900 font-mono">{secret.path}</h3>
-                      {secret.metadata && (
+                      <h3
+                        className={`text-sm font-medium text-gray-900 font-mono ${secret.isDir ? 'cursor-pointer hover:text-orange-600' : ''}`}
+                        onClick={() => { if (secret.isDir) browseTo(secret.path); }}
+                        title={secret.isDir ? 'Open directory' : undefined}
+                      >
+                        {secret.name || secret.path}{secret.isDir ? '/' : ''}
+                      </h3>
+                      {!secret.isDir && secret.metadata && (
                         <div className="flex items-center gap-4 mt-1 text-xs text-gray-500">
                           <span>Version: {secret.metadata.version}</span>
                           <span>Updated: {new Date(secret.metadata.updated_time).toLocaleString()}</span>
@@ -279,20 +321,32 @@ export default function VaultSecretsPage() {
                       )}
                     </div>
                     <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => setEditingSecret(secret)}
-                        className="p-1.5 text-gray-400 hover:text-orange-500 hover:bg-orange-50 rounded"
-                        title="Edit"
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => handleDelete(secret.path)}
-                        className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded"
-                        title="Delete"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      {secret.isDir ? (
+                        <button
+                          onClick={() => browseTo(secret.path)}
+                          className="p-1.5 text-gray-400 hover:text-orange-500 hover:bg-orange-50 rounded"
+                          title="Open"
+                        >
+                          <RefreshCw className="w-4 h-4" />
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => setEditingSecret(secret)}
+                            className="p-1.5 text-gray-400 hover:text-orange-500 hover:bg-orange-50 rounded"
+                            title="Edit"
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => handleDelete(secret.path)}
+                            className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded"
+                            title="Delete"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                   

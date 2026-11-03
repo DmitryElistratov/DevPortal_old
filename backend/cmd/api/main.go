@@ -140,6 +140,7 @@ func main() {
 	grafanaService := service.NewGrafanaService(grafanaClient)
 	graylogService := service.NewGraylogService(graylogClient)
 	vaultService := service.NewVaultService(vaultClient)
+	vaultService.WithIntegrationRepo(integrationRepo)
 
 	// Handlers
 	authHandler := handler.NewAuthHandler(authService)
