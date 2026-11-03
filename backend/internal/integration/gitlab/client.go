@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -306,143 +307,143 @@ func (c *Client) UpdateBranch(ctx context.Context, projectID, branchName, commit
 
 // Pipeline — сжатое представление GitLab CI pipeline.
 type Pipeline struct {
-ID     int    `json:"id"`
-SHA    string `json:"sha"`
-Ref    string `json:"ref"`
-Status string `json:"status"`
-WebURL string `json:"web_url"`
+	ID     int    `json:"id"`
+	SHA    string `json:"sha"`
+	Ref    string `json:"ref"`
+	Status string `json:"status"`
+	WebURL string `json:"web_url"`
 }
 
 // Job — stage/status пайплайна для отображения в UI.
 type Job struct {
-ID     int    `json:"id"`
-Name   string `json:"name"`
-Stage  string `json:"stage"`
-Status string `json:"status"`
+	ID     int    `json:"id"`
+	Name   string `json:"name"`
+	Stage  string `json:"stage"`
+	Status string `json:"status"`
 }
 
 // ListPipelines returns recent pipelines for a project, optionally filtered by ref (branch).
 func (c *Client) ListPipelines(ctx context.Context, projectID, ref string) ([]Pipeline, error) {
-apiURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines?per_page=20", c.baseURL, projectID)
-if ref != "" {
-apiURL += "&ref=" + url.QueryEscape(ref)
-}
-req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
-if err != nil {
-return nil, err
-}
-req.Header.Set("PRIVATE-TOKEN", c.token)
+	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines?per_page=20", c.baseURL, projectID)
+	if ref != "" {
+		apiURL += "&ref=" + url.QueryEscape(ref)
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("PRIVATE-TOKEN", c.token)
 
-resp, err := c.httpClient.Do(req)
-if err != nil {
-return nil, err
-}
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusOK {
-body, _ := io.ReadAll(resp.Body)
-return nil, fmt.Errorf("gitlab API error: %d - %s", resp.StatusCode, string(body))
-}
-var pipelines []Pipeline
-if err := json.NewDecoder(resp.Body).Decode(&pipelines); err != nil {
-return nil, err
-}
-return pipelines, nil
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("gitlab API error: %d - %s", resp.StatusCode, string(body))
+	}
+	var pipelines []Pipeline
+	if err := json.NewDecoder(resp.Body).Decode(&pipelines); err != nil {
+		return nil, err
+	}
+	return pipelines, nil
 }
 
 // GetPipelineJobs returns jobs of a pipeline.
 func (c *Client) GetPipelineJobs(ctx context.Context, projectID string, pipelineID int) ([]Job, error) {
-apiURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/jobs", c.baseURL, projectID, pipelineID)
-req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
-if err != nil {
-return nil, err
-}
-req.Header.Set("PRIVATE-TOKEN", c.token)
+	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%d/jobs", c.baseURL, projectID, pipelineID)
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("PRIVATE-TOKEN", c.token)
 
-resp, err := c.httpClient.Do(req)
-if err != nil {
-return nil, err
-}
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusOK {
-body, _ := io.ReadAll(resp.Body)
-return nil, fmt.Errorf("gitlab API error: %d - %s", resp.StatusCode, string(body))
-}
-var jobs []Job
-if err := json.NewDecoder(resp.Body).Decode(&jobs); err != nil {
-return nil, err
-}
-return jobs, nil
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("gitlab API error: %d - %s", resp.StatusCode, string(body))
+	}
+	var jobs []Job
+	if err := json.NewDecoder(resp.Body).Decode(&jobs); err != nil {
+		return nil, err
+	}
+	return jobs, nil
 }
 
 // TriggerPipeline starts a new pipeline on the given ref with optional variables.
 func (c *Client) TriggerPipeline(ctx context.Context, projectID, ref string, vars map[string]string) (*Pipeline, error) {
-form := url.Values{}
-form.Set("ref", ref)
-for k, v := range vars {
-form.Add("variables[]", k+"="+v)
-}
+	form := url.Values{}
+	form.Set("ref", ref)
+	for k, v := range vars {
+		form.Add("variables[]", k+"="+v)
+	}
 
-apiURL := fmt.Sprintf("%s/api/v4/projects/%s/pipeline", c.baseURL, projectID)
-req, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(form.Encode()))
-if err != nil {
-return nil, err
-}
-req.Header.Set("PRIVATE-TOKEN", c.token)
-req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/pipeline", c.baseURL, projectID)
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("PRIVATE-TOKEN", c.token)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-resp, err := c.httpClient.Do(req)
-if err != nil {
-return nil, err
-}
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusCreated {
-body, _ := io.ReadAll(resp.Body)
-return nil, fmt.Errorf("gitlab API error: %d - %s", resp.StatusCode, string(body))
-}
-var p Pipeline
-if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
-return nil, err
-}
-return &p, nil
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("gitlab API error: %d - %s", resp.StatusCode, string(body))
+	}
+	var p Pipeline
+	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+		return nil, err
+	}
+	return &p, nil
 }
 
 // MergeRequest — сжатое представление MR.
 type MergeRequest struct {
-IID          int    `json:"iid"`
-Title        string `json:"title"`
-State        string `json:"state"`
-SourceBranch string `json:"source_branch"`
-TargetBranch string `json:"target_branch"`
-Author       struct {
-Username string `json:"username"`
-} `json:"author"`
-WebURL string `json:"web_url"`
+	IID          int    `json:"iid"`
+	Title        string `json:"title"`
+	State        string `json:"state"`
+	SourceBranch string `json:"source_branch"`
+	TargetBranch string `json:"target_branch"`
+	Author       struct {
+		Username string `json:"username"`
+	} `json:"author"`
+	WebURL string `json:"web_url"`
 }
 
 // ListMergeRequests returns MRs for a project; state may be opened|merged|closed or empty for all.
 func (c *Client) ListMergeRequests(ctx context.Context, projectID, state string) ([]MergeRequest, error) {
-apiURL := fmt.Sprintf("%s/api/v4/projects/%s/merge_requests?per_page=30&order_by=updated_at", c.baseURL, projectID)
-if state != "" {
-apiURL += "&state=" + url.QueryEscape(state)
-}
-req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
-if err != nil {
-return nil, err
-}
-req.Header.Set("PRIVATE-TOKEN", c.token)
+	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/merge_requests?per_page=30&order_by=updated_at", c.baseURL, projectID)
+	if state != "" {
+		apiURL += "&state=" + url.QueryEscape(state)
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("PRIVATE-TOKEN", c.token)
 
-resp, err := c.httpClient.Do(req)
-if err != nil {
-return nil, err
-}
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusOK {
-body, _ := io.ReadAll(resp.Body)
-return nil, fmt.Errorf("gitlab API error: %d - %s", resp.StatusCode, string(body))
-}
-var mrs []MergeRequest
-if err := json.NewDecoder(resp.Body).Decode(&mrs); err != nil {
-return nil, err
-}
-return mrs, nil
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("gitlab API error: %d - %s", resp.StatusCode, string(body))
+	}
+	var mrs []MergeRequest
+	if err := json.NewDecoder(resp.Body).Decode(&mrs); err != nil {
+		return nil, err
+	}
+	return mrs, nil
 }
