@@ -20,7 +20,8 @@ import {
   FolderOpen,
   Search,
   ArrowLeft,
-  FileKey
+  FileKey,
+  Sparkles
 } from 'lucide-react';
 
 interface VaultSecret {
@@ -43,6 +44,63 @@ const fmtDate = (s?: string): string => {
   return isNaN(d.getTime()) ? '—' : d.toLocaleString();
 };
 
+// ---------------------------------------------------------------------------
+// Secret generator (crypto-secure, runs in the browser — nothing is sent
+// anywhere until the user saves the secret to Vault).
+// ---------------------------------------------------------------------------
+interface GenOptions {
+  length: number;
+  uppercase: boolean;
+  lowercase: boolean;
+  digits: boolean;
+  symbols: boolean;
+  excludeAmbiguous: boolean; // 0O1lI`
+}
+
+const DEFAULT_GEN_OPTIONS: GenOptions = {
+  length: 24,
+  uppercase: true,
+  lowercase: true,
+  digits: true,
+  symbols: true,
+  excludeAmbiguous: false,
+};
+
+function generateSecretValue(opts: GenOptions): string {
+  let alphabet = '';
+  if (opts.uppercase) alphabet += 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  if (opts.lowercase) alphabet += 'abcdefghijkmnpqrstuvwxyz';
+  if (opts.digits) alphabet += '23456789';
+  if (opts.symbols) alphabet += '!@#$%^&*()-_=+[]{};:,.<>?/~';
+  if (!opts.excludeAmbiguous) {
+    if (opts.uppercase) alphabet += 'OI';
+    if (opts.lowercase) alphabet += 'l';
+    if (opts.digits) alphabet += '01';
+  }
+  if (!alphabet) alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+
+  // Unbiased rejection sampling over crypto random values.
+  const len = Math.max(8, Math.min(128, Math.floor(opts.length) || 24));
+  const max = 0x10000 - (0x10000 % alphabet.length);
+  const buf = new Uint16Array(len);
+  const out: string[] = [];
+  let filled = 0;
+  while (filled < len) {
+    crypto.getRandomValues(buf.subarray(filled));
+    for (let i = filled; i < buf.length && out.length < len; i++) {
+      if (buf[i] < max) out.push(alphabet[buf[i] % alphabet.length]);
+    }
+    filled = out.length;
+  }
+  return out.join('');
+}
+
+// Rough entropy estimate in bits, shown next to the generated value.
+function entropyBits(value: string): number {
+  const set = new Set(value);
+  return value.length * Math.round(Math.log2(Math.max(set.size, 2)) * 10) / 10;
+}
+
 export default function VaultSecretsPage() {
   const { settings } = useSettings();
   const [secrets, setSecrets] = useState<VaultSecret[]>([]);
@@ -56,6 +114,10 @@ export default function VaultSecretsPage() {
   });
   const [newKey, setNewKey] = useState('');
   const [newValue, setNewValue] = useState('');
+  // Secret generator state (used in the create/edit modal)
+  const [genOpen, setGenOpen] = useState(false);
+  const [genOpts, setGenOpts] = useState<GenOptions>(DEFAULT_GEN_OPTIONS);
+  const [generatePreview, setGeneratePreview] = useState<string | null>(null);
   const [visibleSecrets, setVisibleSecrets] = useState<Set<string>>(new Set());
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   // currentPath is what the user types; committedPath is what we actually query.
@@ -245,12 +307,30 @@ export default function VaultSecretsPage() {
 
   const addKeyValue = () => {
     if (!newKey.trim()) return;
+    // If the value box holds a generator placeholder, replace it with a real
+    // generated secret so "password ⚙" one-click flow works.
+    let value = newValue;
+    if (value.startsWith('generated:')) {
+      value = generateSecretValue(genOpts);
+    }
     setNewSecret(prev => ({
       ...prev,
-      data: { ...prev.data, [newKey]: newValue },
+      data: { ...prev.data, [newKey]: value },
     }));
     setNewKey('');
     setNewValue('');
+    setGenOpen(false);
+  };
+
+  const applyGeneratedToValue = () => {
+    setNewValue(generateSecretValue(genOpts));
+  };
+
+  const regenerateExisting = (key: string) => {
+    setNewSecret(prev => ({
+      ...prev,
+      data: { ...prev.data, [key]: generateSecretValue(genOpts) },
+    }));
   };
 
   const removeKeyValue = (key: string) => {
@@ -692,7 +772,14 @@ export default function VaultSecretsPage() {
                     {Object.entries(newSecret.data).map(([key, value]) => (
                       <div key={key} className="flex items-center gap-2 bg-gray-50 rounded px-3 py-2">
                         <span className="text-sm font-medium text-gray-700 min-w-[120px]">{key}:</span>
-                        <span className="text-sm text-gray-600 flex-1">{String(value)}</span>
+                        <span className="text-sm text-gray-600 flex-1 font-mono break-all">{String(value)}</span>
+                        <button
+                          onClick={() => regenerateExisting(key)}
+                          title="Regenerate with generator settings"
+                          className="p-1 text-gray-400 hover:text-orange-600"
+                        >
+                          <RefreshCw className="w-4 h-4" />
+                        </button>
                         <button
                           onClick={() => removeKeyValue(key)}
                           className="p-1 text-gray-400 hover:text-red-600"
@@ -717,8 +804,15 @@ export default function VaultSecretsPage() {
                     value={newValue}
                     onChange={(e) => setNewValue(e.target.value)}
                     placeholder="Value"
-                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 font-mono"
                   />
+                  <button
+                    onClick={() => { setGenOpen(o => !o); if (!newValue || newValue.startsWith('generated:')) setNewValue(''); }}
+                    title="Generate secure random value"
+                    className={`px-3 py-2 border rounded-lg ${genOpen ? 'bg-orange-500 text-white border-orange-500' : 'border-gray-300 text-gray-700 hover:bg-gray-50'}`}
+                  >
+                    <Sparkles className="w-4 h-4" />
+                  </button>
                   <button
                     onClick={addKeyValue}
                     disabled={!newKey.trim()}
@@ -727,6 +821,62 @@ export default function VaultSecretsPage() {
                     Add
                   </button>
                 </div>
+
+                {/* Secret generator panel */}
+                {genOpen && (
+                  <div className="mt-3 p-4 border border-orange-200 bg-orange-50/50 rounded-lg space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-semibold text-gray-800">Secret Generator</h3>
+                      <span className="text-xs text-gray-500">
+                        entropy ≈ {entropyBits(generateSecretValue(genOpts)).toFixed(0)} bits
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="text-sm text-gray-700 whitespace-nowrap">Length: {genOpts.length}</label>
+                      <input
+                        type="range"
+                        min={8}
+                        max={64}
+                        value={genOpts.length}
+                        onChange={(e) => setGenOpts({ ...genOpts, length: Number(e.target.value) })}
+                        className="flex-1 accent-orange-500"
+                      />
+                    </div>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-700">
+                      {([
+                        ['uppercase', 'A-Z'],
+                        ['lowercase', 'a-z'],
+                        ['digits', '0-9'],
+                        ['symbols', '!@#$'],
+                        ['excludeAmbiguous', 'No ambiguous (0O1lI)'],
+                      ] as const).map(([k, label]) => (
+                        <label key={k} className="flex items-center gap-1.5 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={genOpts[k]}
+                            onChange={(e) => setGenOpts({ ...genOpts, [k]: e.target.checked })}
+                            className="accent-orange-500"
+                          />
+                          {label}
+                        </label>
+                      ))}
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={applyGeneratedToValue}
+                        className="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg font-medium"
+                      >
+                        Generate &amp; fill Value
+                      </button>
+                      <button
+                        onClick={() => { const v = generateSecretValue(genOpts); setGeneratePreview(v); setNewValue(v); }}
+                        className="px-3 py-1.5 border border-orange-300 text-orange-700 hover:bg-orange-100 text-sm rounded-lg"
+                      >
+                        Regenerate preview
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="flex gap-3 pt-4 border-t border-gray-200">
@@ -803,8 +953,17 @@ export default function VaultSecretsPage() {
                             };
                           });
                         }}
-                        className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                        className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 font-mono"
                       />
+                      <button
+                        onClick={() => {
+                          setEditingSecret(prev => prev ? { ...prev, data: { ...prev.data, [key]: generateSecretValue(genOpts) } } : prev);
+                        }}
+                        title="Generate secure random value (uses generator settings)"
+                        className="p-2 text-gray-400 hover:text-orange-600"
+                      >
+                        <Sparkles className="w-4 h-4" />
+                      </button>
                       <button
                         onClick={() => {
                           setEditingSecret(prev => {

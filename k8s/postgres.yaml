@@ -1,0 +1,74 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: portal-postgres-secret
+  namespace: release-portal
+type: Opaque
+stringData:
+  # CHANGE ME before deploying to any shared environment
+  POSTGRES_USER: portal
+  POSTGRES_PASSWORD: change-me-strong-password
+  DATABASE_URL: "postgres://portal:change-me-strong-password@portal-postgres:5432/release_portal?sslmode=disable"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: portal-postgres-data
+  namespace: release-portal
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: portal-postgres
+  namespace: release-portal
+  labels: { app: portal-postgres }
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: portal-postgres }
+  template:
+    metadata:
+      labels: { app: portal-postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          args: ["-c", "max_connections=200"]
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: portal-postgres-secret
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "portal"] }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: portal-postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: portal-postgres
+  namespace: release-portal
+spec:
+  selector: { app: portal-postgres }
+  ports:
+    - port: 5432
+      targetPort: 5432
